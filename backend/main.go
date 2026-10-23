@@ -44,6 +44,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	migrate()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ShopManager API is running"))
@@ -52,19 +53,21 @@ func main() {
 	mux.HandleFunc("POST /products", createProduct)
 	mux.HandleFunc("PUT /products/{id}", updateProduct)
 	mux.HandleFunc("POST /products/{id}/restock", restockProduct)
-	mux.HandleFunc("POST /sales", createSale)
-	mux.HandleFunc("GET /sales/recent", recentSales)
+	mux.HandleFunc("POST /sales", createSaleV2)
+	mux.HandleFunc("GET /sales/recent", recentSales2)
+	mux.HandleFunc("GET /sales/history", salesHistory)
 	mux.HandleFunc("GET /expenses", listExpenses)
 	mux.HandleFunc("POST /expenses", createExpense)
-	mux.HandleFunc("GET /reports/today", todayReport)
+	mux.HandleFunc("GET /reports/today", todayReport2)
 
+	mux.HandleFunc("POST /sales/{id}/void", voidSale)
 	log.Println("API running on http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", cors(mux)))
 }
 
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		if r.Method == http.MethodOptions {

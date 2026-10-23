@@ -1,3 +1,5 @@
+import HistoryScreen from './History.jsx'
+import SaleScreen from './Sale.jsx'
 import { useEffect, useState } from 'react'
 import './App.css'
 
@@ -21,6 +23,7 @@ async function api(path, options) {
 const TABS = [
   ['dashboard', 'Dashboard'],
   ['sale', 'New sale'],
+  ['history', 'History'],
   ['products', 'Products'],
   ['expenses', 'Expenses'],
 ]
@@ -74,6 +77,12 @@ export default function App() {
       <div className="topbar">
         <div className="topbar-inner">
           <div className="brand">ShopManager</div>
+          <button
+            className="theme-btn"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          >
+            {theme === 'dark' ? '☀ Light mode' : '🌙 Dark mode'}
+          </button>
           <div className="tabs">
             {TABS.map(([key, label]) => (
               <button
@@ -90,7 +99,8 @@ export default function App() {
 
       <div className="page">
         {tab === 'dashboard' && <Dashboard report={report} recent={recent} />}
-        {tab === 'sale' && <Sale products={products} reload={load} notify={notify} />}
+        {tab === 'sale' && <SaleScreen products={products} reload={load} notify={notify} />}
+        {tab === 'history' && <HistoryScreen notify={notify} reload={load} />}
         {tab === 'products' && <Products products={products} reload={load} notify={notify} />}
         {tab === 'expenses' && (
           <Expenses expenses={expenses} report={report} reload={load} notify={notify} />
@@ -232,9 +242,19 @@ function Sale({ products, reload, notify }) {
       <div className="card">
         <h2>Products</h2>
         <input
-          placeholder="Search products..."
+          autoFocus
+          placeholder="Type a product name and press Enter..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return
+            if (shown.length > 0) {
+              add(shown[0])
+              setSearch('')
+            } else {
+              notify('No product matches that name', 'error')
+            }
+          }}
         />
         {products.length === 0 && <div className="empty">Add products in the Products tab first.</div>}
         <div className="tiles">
@@ -280,6 +300,44 @@ function Sale({ products, reload, notify }) {
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+function History() {
+  const [sales, setSales] = useState(null)
+
+  useEffect(() => {
+    api('/sales/history')
+      .then(setSales)
+      .catch(() => setSales([]))
+  }, [])
+
+  return (
+    <div className="card">
+      <h2>Transaction history</h2>
+      {sales === null && <div className="empty">Loading...</div>}
+      {sales && sales.length === 0 && <div className="empty">No sales recorded yet.</div>}
+      {sales && sales.length > 0 && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Receipt</th><th>Time</th><th>Items sold</th><th>Total</th><th>Profit</th></tr>
+            </thead>
+            <tbody>
+              {sales.map((s) => (
+                <tr key={s.id}>
+                  <td>#{s.id}</td>
+                  <td>{when(s.created_at)}</td>
+                  <td>{s.items}</td>
+                  <td>{naira(s.total)}</td>
+                  <td className="ok">{naira(s.profit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -428,16 +486,18 @@ function Products({ products, reload, notify }) {
 function Expenses({ expenses, report, reload, notify }) {
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
+  const [date, setDate] = useState('')
 
   async function add(e) {
     e.preventDefault()
     try {
       await api('/expenses', {
         method: 'POST',
-        body: JSON.stringify({ description, amount: toKobo(amount) }),
+        body: JSON.stringify({ description, amount: toKobo(amount), date }),
       })
       setDescription('')
       setAmount('')
+      setDate('')
       notify('Expense recorded')
       reload()
     } catch (err) {
@@ -461,6 +521,9 @@ function Expenses({ expenses, report, reload, notify }) {
           </label>
           <label className="field"><span>Amount (₦)</span>
             <input required type="number" min="1" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </label>
+          <label className="field"><span>Date (leave empty for today)</span>
+            <input type="date" max={new Date().toISOString().slice(0, 10)} value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
           <button type="submit">Save expense</button>
         </form>
