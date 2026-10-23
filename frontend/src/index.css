@@ -1,0 +1,47 @@
+:root {
+  color-scheme: light;
+  --bg1: #ecfdf5;
+  --bg2: #e0f2fe;
+  --card: #ffffff;
+  --text: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --soft: #f3f4f6;
+  --soft-hover: #e5e7eb;
+  --input: #ffffff;
+  --green: #0a7d4b;
+  --green-dark: #08663d;
+  --red: #b3261e;
+  --tile-hover: #f0fdf4;
+  --top1: #0a7d4b;
+  --top2: #12a05f;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bg1: #0a110e;
+  --bg2: #0f1e19;
+  --card: #15201b;
+  --text: #e8efe9;
+  --muted: #9bb0a4;
+  --line: #263530;
+  --soft: #1f2d27;
+  --soft-hover: #2a3b34;
+  --input: #0f1915;
+  --green: #1f9d63;
+  --green-dark: #198652;
+  --red: #f2766d;
+  --tile-hover: #143024;
+  --top1: #0c3d29;
+  --top2: #0f5a3b;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: system-ui, sans-serif;
+  color: var(--text);
+  background: linear-gradient(160deg, var(--bg1), var(--bg2)) fixed;
+}

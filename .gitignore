@@ -1,0 +1,5 @@
+backend/shop.db
+backend/shop.db-*
+node_modules/
+frontend/dist/
+.env
