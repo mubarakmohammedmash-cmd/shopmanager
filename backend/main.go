@@ -45,30 +45,34 @@ func main() {
 	}
 
 	migrate()
+	migrateAuth()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ShopManager API is running"))
 	})
-	mux.HandleFunc("GET /products", listProducts)
+	mux.HandleFunc("GET /products", listProductsV2)
 	mux.HandleFunc("POST /products", createProduct)
 	mux.HandleFunc("PUT /products/{id}", updateProduct)
 	mux.HandleFunc("POST /products/{id}/restock", restockProduct)
-	mux.HandleFunc("POST /sales", createSaleV2)
+	mux.HandleFunc("POST /sales", createSaleV3)
 	mux.HandleFunc("GET /sales/recent", recentSales2)
-	mux.HandleFunc("GET /sales/history", salesHistory)
+	mux.HandleFunc("GET /sales/history", salesHistoryV2)
 	mux.HandleFunc("GET /expenses", listExpenses)
 	mux.HandleFunc("POST /expenses", createExpense)
 	mux.HandleFunc("GET /reports/today", todayReport2)
 
-	mux.HandleFunc("POST /sales/{id}/void", voidSale)
+	mux.HandleFunc("POST /sales/{id}/void", voidSaleV2)
+	mux.HandleFunc("GET /reports/range", rangeReport)
+	mux.HandleFunc("GET /reports/export", exportCSV)
+	registerAuthRoutes(mux)
 	log.Println("API running on http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", cors(mux)))
+	log.Fatal(http.ListenAndServe(":8080", cors(withAuth(mux))))
 }
 
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

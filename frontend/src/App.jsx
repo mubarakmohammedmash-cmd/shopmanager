@@ -1,3 +1,4 @@
+import ReportsScreen from './Reports.jsx'
 import HistoryScreen from './History.jsx'
 import SaleScreen from './Sale.jsx'
 import { useEffect, useState } from 'react'
@@ -24,6 +25,7 @@ const TABS = [
   ['dashboard', 'Dashboard'],
   ['sale', 'New sale'],
   ['history', 'History'],
+  ["reports", "Reports"],
   ['products', 'Products'],
   ['expenses', 'Expenses'],
 ]
@@ -101,6 +103,7 @@ export default function App() {
         {tab === 'dashboard' && <Dashboard report={report} recent={recent} />}
         {tab === 'sale' && <SaleScreen products={products} reload={load} notify={notify} />}
         {tab === 'history' && <HistoryScreen notify={notify} reload={load} />}
+        {tab === "reports" && <ReportsScreen />}
         {tab === 'products' && <Products products={products} reload={load} notify={notify} />}
         {tab === 'expenses' && (
           <Expenses expenses={expenses} report={report} reload={load} notify={notify} />
