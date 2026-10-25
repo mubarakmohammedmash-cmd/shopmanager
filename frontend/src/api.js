@@ -1,4 +1,4 @@
-export const API = 'http://localhost:8080'
+export const API = import.meta.env.DEV ? 'http://localhost:8080' : '/api'
 
 const KEY = 'shopmanager-auth'
 
