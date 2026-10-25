@@ -55,7 +55,8 @@ func todayReport2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM expenses
-		WHERE date(created_at, '+1 hour') = date('now', '+1 hour')`).Scan(&expenses)
+		WHERE status = 'approved'
+		AND date(created_at, '+1 hour') = date('now', '+1 hour')`).Scan(&expenses)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

@@ -120,7 +120,8 @@ func rangeReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM expenses
-		WHERE date(created_at, '+1 hour') BETWEEN ? AND ?`, from, to).Scan(&expenses)
+		WHERE status = 'approved'
+		AND date(created_at, '+1 hour') BETWEEN ? AND ?`, from, to).Scan(&expenses)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

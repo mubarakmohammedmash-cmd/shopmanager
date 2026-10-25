@@ -46,6 +46,7 @@ func main() {
 
 	migrate()
 	migrateAuth()
+	migrateExpenses()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ShopManager API is running"))
@@ -59,6 +60,8 @@ func main() {
 	mux.HandleFunc("GET /sales/history", salesHistoryV2)
 	mux.HandleFunc("GET /expenses", listExpenses)
 	mux.HandleFunc("POST /expenses", createExpense)
+	mux.HandleFunc("POST /expenses/{id}/review", reviewExpense)
+	mux.HandleFunc("POST /expenses/{id}/reimburse", reimburseExpense)
 	mux.HandleFunc("GET /reports/today", todayReport2)
 
 	mux.HandleFunc("POST /sales/{id}/void", voidSaleV2)
@@ -295,46 +298,6 @@ func recentSales(w http.ResponseWriter, r *http.Request) {
 		out = append(out, s)
 	}
 	writeJSON(w, 200, out)
-}
-
-func listExpenses(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query(`SELECT id, description, amount, created_at FROM expenses
-		ORDER BY id DESC LIMIT 50`)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	defer rows.Close()
-	out := []Expense{}
-	for rows.Next() {
-		var e Expense
-		if err := rows.Scan(&e.ID, &e.Description, &e.Amount, &e.CreatedAt); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		out = append(out, e)
-	}
-	writeJSON(w, 200, out)
-}
-
-func createExpense(w http.ResponseWriter, r *http.Request) {
-	var e Expense
-	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
-		http.Error(w, "invalid JSON", 400)
-		return
-	}
-	e.Description = strings.TrimSpace(e.Description)
-	if e.Description == "" || e.Amount <= 0 {
-		http.Error(w, "description and a positive amount are required", 400)
-		return
-	}
-	res, err := db.Exec(`INSERT INTO expenses (description, amount) VALUES (?, ?)`, e.Description, e.Amount)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	e.ID, _ = res.LastInsertId()
-	writeJSON(w, 201, e)
 }
 
 type TopProduct struct {

@@ -1,0 +1,294 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+)
+
+func migrateExpenses() {
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{"submitted_by", "INTEGER"},
+		{"submitted_by_name", "TEXT NOT NULL DEFAULT ''"},
+		{"payment_source", "TEXT NOT NULL DEFAULT 'company'"},
+		{"status", "TEXT NOT NULL DEFAULT 'approved'"},
+		{"reviewed_by", "INTEGER"},
+		{"reviewed_at", "TEXT"},
+		{"review_note", "TEXT NOT NULL DEFAULT ''"},
+		{"reimbursement_status", "TEXT NOT NULL DEFAULT 'not_applicable'"},
+		{"reimbursed_at", "TEXT"},
+	}
+
+	for _, col := range columns {
+		if !hasColumn("expenses", col.name) {
+			_, err := db.Exec(
+				`ALTER TABLE expenses ADD COLUMN ` + col.name + ` ` + col.def,
+			)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+
+	// Preserve existing expenses as approved.
+	if _, err := db.Exec(`
+		UPDATE expenses
+		SET status = 'approved'
+		WHERE status IS NULL OR status = ''
+	`); err != nil {
+		log.Fatal(err)
+	}
+}
+
+type expenseInput struct {
+	Description   string `json:"description"`
+	Amount        int64  `json:"amount"`
+	Date          string `json:"date"`
+	PaymentSource string `json:"payment_source"`
+}
+
+func createExpense(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+
+	var in expenseInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	in.Description = strings.TrimSpace(in.Description)
+	if in.Description == "" || in.Amount <= 0 {
+		http.Error(w, "Description and a positive amount are required", http.StatusBadRequest)
+		return
+	}
+
+	if in.PaymentSource == "" {
+		in.PaymentSource = "company"
+	}
+	if in.PaymentSource != "company" && in.PaymentSource != "personal" {
+		http.Error(w, "Payment source must be company or personal", http.StatusBadRequest)
+		return
+	}
+
+	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	if in.Date != "" {
+		d, err := time.Parse("2006-01-02", in.Date)
+		if err != nil {
+			http.Error(w, "Date must use YYYY-MM-DD format", http.StatusBadRequest)
+			return
+		}
+		if in.Date > time.Now().UTC().Format("2006-01-02") {
+			http.Error(w, "Date cannot be in the future", http.StatusBadRequest)
+			return
+		}
+		createdAt = d.Format("2006-01-02") + " 12:00:00"
+	}
+
+	status := "pending"
+	reimbursement := "not_applicable"
+
+	if in.PaymentSource == "personal" {
+		reimbursement = "unpaid"
+	}
+
+	res, err := db.Exec(`
+		INSERT INTO expenses (
+			description, amount, created_at, submitted_by,
+			submitted_by_name, payment_source, status,
+			reimbursement_status
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		in.Description,
+		in.Amount,
+		createdAt,
+		u.ID,
+		u.Username,
+		in.PaymentSource,
+		status,
+		reimbursement,
+	)
+	if err != nil {
+		http.Error(w, "Could not save expense", http.StatusInternalServerError)
+		return
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		http.Error(w, "Could not retrieve expense ID", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":                  id,
+		"description":         in.Description,
+		"amount":              in.Amount,
+		"created_at":          createdAt,
+		"submitted_by":        u.ID,
+		"submitted_by_name":   u.Username,
+		"payment_source":      in.PaymentSource,
+		"status":              status,
+		"reimbursement_status": reimbursement,
+	})
+}
+
+func listExpenses(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+
+	query := `
+		SELECT id, description, amount, created_at,
+			COALESCE(submitted_by, 0),
+			submitted_by_name, payment_source, status,
+			COALESCE(reviewed_by, 0), COALESCE(reviewed_at, ''),
+			review_note, reimbursement_status, COALESCE(reimbursed_at, '')
+		FROM expenses
+	`
+
+	args := []any{}
+
+	// Representatives can only see their own submissions.
+	if u.Role != "admin" {
+		query += ` WHERE submitted_by = ?`
+		args = append(args, u.ID)
+	}
+
+	query += ` ORDER BY id DESC LIMIT 200`
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		http.Error(w, "Could not load expenses", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type expenseRecord struct {
+		ID                   int64  `json:"id"`
+		Description          string `json:"description"`
+		Amount               int64  `json:"amount"`
+		CreatedAt            string `json:"created_at"`
+		SubmittedBy          int64  `json:"submitted_by"`
+		SubmittedByName      string `json:"submitted_by_name"`
+		PaymentSource        string `json:"payment_source"`
+		Status               string `json:"status"`
+		ReviewedBy           int64  `json:"reviewed_by"`
+		ReviewedAt           string `json:"reviewed_at"`
+		ReviewNote           string `json:"review_note"`
+		ReimbursementStatus  string `json:"reimbursement_status"`
+		ReimbursedAt         string `json:"reimbursed_at"`
+	}
+
+	out := []expenseRecord{}
+
+	for rows.Next() {
+		var e expenseRecord
+		if err := rows.Scan(
+			&e.ID,
+			&e.Description,
+			&e.Amount,
+			&e.CreatedAt,
+			&e.SubmittedBy,
+			&e.SubmittedByName,
+			&e.PaymentSource,
+			&e.Status,
+			&e.ReviewedBy,
+			&e.ReviewedAt,
+			&e.ReviewNote,
+			&e.ReimbursementStatus,
+			&e.ReimbursedAt,
+		); err != nil {
+			http.Error(w, "Could not read expenses", http.StatusInternalServerError)
+			return
+		}
+		out = append(out, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "Could not read expenses", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, out)
+}
+
+func reviewExpense(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "Invalid expense ID", http.StatusBadRequest)
+		return
+	}
+
+	var in struct {
+		Status string `json:"status"`
+		Note   string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if in.Status != "approved" && in.Status != "rejected" {
+		http.Error(w, "Status must be approved or rejected", http.StatusBadRequest)
+		return
+	}
+
+	result, err := db.Exec(`
+		UPDATE expenses
+		SET status = ?, reviewed_by = ?, reviewed_at = datetime('now'),
+			review_note = ?
+		WHERE id = ? AND status = 'pending'
+	`, in.Status, u.ID, strings.TrimSpace(in.Note), id)
+	if err != nil {
+		http.Error(w, "Could not review expense", http.StatusInternalServerError)
+		return
+	}
+
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		http.Error(w, "Expense not found or already reviewed", http.StatusConflict)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": in.Status})
+}
+
+func reimburseExpense(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "Invalid expense ID", http.StatusBadRequest)
+		return
+	}
+
+	result, err := db.Exec(`
+		UPDATE expenses
+		SET reimbursement_status = 'paid',
+			reimbursed_at = datetime('now')
+		WHERE id = ?
+			AND status = 'approved'
+			AND payment_source = 'personal'
+			AND reimbursement_status = 'unpaid'
+	`, id)
+	if err != nil {
+		http.Error(w, "Could not update reimbursement", http.StatusInternalServerError)
+		return
+	}
+
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		http.Error(w, "Expense is not approved, not reimbursable, or already paid", http.StatusConflict)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"reimbursement_status": "paid"})
+}
+
+// Keep this import used for compatibility with existing database handling.
+var _ *sql.DB
