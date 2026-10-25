@@ -93,7 +93,7 @@ func main() {
 	registerAuthRoutes(mux)
 
 	// CORS and authentication middleware.
-	handler := cors(withAuth(mux))
+	handler := cors(stripAPI(withAuth(mux)))
 
 	// Vercel may supply PORT. Use 8080 for local development.
 	port := os.Getenv("PORT")
@@ -113,6 +113,20 @@ func main() {
 		err != http.ErrServerClosed {
 		log.Fatal("API server failed: ", err)
 	}
+}
+
+// Accepts both /auth/status and /api/auth/status, whichever path the host forwards.
+func stripAPI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api" {
+			r.URL.Path = "/"
+			r.URL.RawPath = ""
+		} else if strings.HasPrefix(r.URL.Path, "/api/") {
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/api")
+			r.URL.RawPath = ""
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func cors(next http.Handler) http.Handler {
