@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -33,6 +34,11 @@ type Expense struct {
 	Amount      int64  `json:"amount"`
 	CreatedAt   string `json:"created_at"`
 }
+
+var (
+	instanceID, _ = os.Hostname()
+	startedAt     = time.Now().UTC().Format(time.RFC3339)
+)
 
 func main() {
 	var err error
@@ -67,8 +73,9 @@ func main() {
 
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ShopManager API is running"))
+		_, _ = w.Write([]byte("ShopManager API is running\ninstance: " + instanceID + "\nstarted: " + startedAt + "\n"))
 	})
 
 	mux.HandleFunc("GET /products", listProductsV2)
