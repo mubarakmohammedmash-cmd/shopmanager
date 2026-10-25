@@ -1,0 +1,54 @@
+/* ===== ShopManager layout fix (loads after App.css) ===== */
+
+table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 12px 14px;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+
+td:nth-child(3) {
+  white-space: normal;
+  min-width: 220px;
+}
+
+td button {
+  margin: 2px 4px 2px 0;
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+input,
+select,
+textarea {
+  box-sizing: border-box;
+  line-height: 1.5;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.3;
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+p {
+  line-height: 1.6;
+}
