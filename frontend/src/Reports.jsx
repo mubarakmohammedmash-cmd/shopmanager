@@ -1,13 +1,5 @@
 import { useEffect, useState } from 'react'
-
-const API = 'http://localhost:8080'
-
-const naira = (kobo) =>
-  '₦' + (kobo / 100).toLocaleString('en-NG', { maximumFractionDigits: 2 })
-
-// Lagos date (UTC+1) as YYYY-MM-DD, optionally some days ago
-const lagos = (daysAgo = 0) =>
-  new Date(Date.now() + 3600 * 1000 - daysAgo * 86400000).toISOString().slice(0, 10)
+import { api, downloadCSV, naira, lagos } from './api.js'
 
 const method = { cash: 'Cash', transfer: 'Transfer', pos: 'POS' }
 
@@ -29,11 +21,7 @@ export default function ReportsScreen() {
   useEffect(() => {
     if (!from || !to) return
     let cancelled = false
-    fetch(`${API}/reports/range?from=${from}&to=${to}`)
-      .then(async (r) => {
-        if (!r.ok) throw new Error((await r.text()).trim())
-        return r.json()
-      })
+    api(`/reports/range?from=${from}&to=${to}`)
       .then((d) => {
         if (!cancelled) {
           setData(d)
@@ -56,8 +44,12 @@ export default function ReportsScreen() {
     setTo(lagos())
   }
 
-  function download() {
-    window.location.href = `${API}/reports/export?from=${from}&to=${to}`
+  async function download() {
+    try {
+      await downloadCSV(from, to)
+    } catch (e) {
+      setError(e.message)
+    }
   }
 
   return (
@@ -94,11 +86,20 @@ export default function ReportsScreen() {
             />
             <Stat label="Transactions" value={data.sales_count} />
             <Stat label="Voided sales" value={data.voided_count} />
+            <Stat label="Cash received" value={naira(data.cash_received ?? 0)} />
+            <Stat label="Transfers received" value={naira(data.transfer_received ?? 0)} />
+            <Stat label="POS received" value={naira(data.pos_received ?? 0)} />
+            <Stat label="Cash change paid out" value={naira(data.cash_change_paid ?? 0)} />
+            <Stat
+              label="Net cash drawer movement"
+              value={naira(data.cash_drawer_net ?? 0)}
+              tone={(data.cash_drawer_net ?? 0) < 0 ? 'bad' : 'good'}
+            />
           </div>
 
           <div className="grid-2">
             <div className="card">
-              <h2>Paid by</h2>
+              <h2>Money received by payment method</h2>
               {data.payments.length === 0 && <div className="empty">No sales in this period.</div>}
               {data.payments.map((p) => (
                 <div key={p.method} className="cart-line">

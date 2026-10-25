@@ -58,10 +58,10 @@ func topInRange(from, to string) ([]TopProduct, error) {
 }
 
 func paymentsInRange(from, to string) ([]PaymentTotal, error) {
-	rows, err := db.Query(`SELECT s.payment_method, SUM(si.qty * si.unit_price)
-		FROM sales s JOIN sale_items si ON si.sale_id = s.id
+	rows, err := db.Query(`SELECT s.payment_method, SUM(s.amount_received)
+		FROM sales s
 		WHERE s.status = 'completed' AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
-		GROUP BY s.payment_method ORDER BY SUM(si.qty * si.unit_price) DESC`, from, to)
+		GROUP BY s.payment_method ORDER BY SUM(s.amount_received) DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -147,18 +147,37 @@ func rangeReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var cashReceived, transferReceived, posReceived, changePaid int64
+	err = db.QueryRow(`SELECT
+		COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount_received ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN payment_method = 'transfer' THEN amount_received ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN payment_method = 'pos' THEN amount_received ELSE 0 END), 0),
+		COALESCE(SUM(change_given), 0)
+		FROM sales
+		WHERE status = 'completed' AND date(created_at, '+1 hour') BETWEEN ? AND ?`,
+		from, to).Scan(&cashReceived, &transferReceived, &posReceived, &changePaid)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
 	writeJSON(w, 200, map[string]any{
-		"from":         from,
-		"to":           to,
-		"revenue":      revenue,
-		"profit":       profit,
-		"expenses":     expenses,
-		"net_profit":   profit - expenses,
-		"sales_count":  count,
-		"voided_count": voided,
-		"top_products": top,
-		"payments":     pays,
-		"days":         days,
+		"from":              from,
+		"to":                to,
+		"revenue":           revenue,
+		"profit":            profit,
+		"expenses":          expenses,
+		"net_profit":        profit - expenses,
+		"sales_count":       count,
+		"voided_count":      voided,
+		"top_products":      top,
+		"payments":          pays,
+		"cash_received":     cashReceived,
+		"transfer_received": transferReceived,
+		"pos_received":      posReceived,
+		"cash_change_paid":  changePaid,
+		"cash_drawer_net":   cashReceived - changePaid,
+		"days":              days,
 	})
 }
 

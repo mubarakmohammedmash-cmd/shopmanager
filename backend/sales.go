@@ -31,6 +31,8 @@ func migrate() {
 		{"status", `TEXT NOT NULL DEFAULT 'completed'`},
 		{"payment_method", `TEXT NOT NULL DEFAULT 'cash'`},
 		{"voided_at", `TEXT`},
+		{"amount_received", `INTEGER NOT NULL DEFAULT 0`},
+		{"change_given", `INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, c := range add {
 		if !have[c[0]] {
@@ -38,6 +40,11 @@ func migrate() {
 				log.Fatal(err)
 			}
 		}
+	}
+	// Existing completed sales are treated as paid in full.
+	if _, err := db.Exec(`UPDATE sales SET amount_received = total
+		WHERE amount_received = 0 AND total > 0`); err != nil {
+		log.Fatal(err)
 	}
 }
 
@@ -48,8 +55,9 @@ type saleItemReq2 struct {
 }
 
 type saleReq2 struct {
-	Items         []saleItemReq2 `json:"items"`
-	PaymentMethod string         `json:"payment_method"`
+	Items          []saleItemReq2 `json:"items"`
+	PaymentMethod  string         `json:"payment_method"`
+	AmountReceived int64          `json:"amount_received"`
 }
 
 var validPayment = map[string]bool{"cash": true, "transfer": true, "pos": true}

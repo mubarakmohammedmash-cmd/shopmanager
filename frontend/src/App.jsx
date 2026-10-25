@@ -1,37 +1,30 @@
-import ReportsScreen from './Reports.jsx'
-import HistoryScreen from './History.jsx'
-import SaleScreen from './Sale.jsx'
 import { useEffect, useState } from 'react'
 import './App.css'
+import { api, naira, toKobo, when } from './api.js'
+import SaleScreen from './Sale.jsx'
+import HistoryScreen from './History.jsx'
+import ReportsScreen from './Reports.jsx'
+import UsersScreen from './Users.jsx'
 
-const API = 'http://localhost:8080'
-
-const naira = (kobo) =>
-  '₦' + (kobo / 100).toLocaleString('en-NG', { maximumFractionDigits: 2 })
-const toKobo = (v) => Math.round(Number(v) * 100)
-const when = (s) =>
-  new Date(s.replace(' ', 'T') + 'Z').toLocaleString('en-NG', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-
-async function api(path, options) {
-  const res = await fetch(API + path, options)
-  if (!res.ok) throw new Error((await res.text()).trim())
-  return res.json()
-}
-
-const TABS = [
+const ADMIN_TABS = [
   ['dashboard', 'Dashboard'],
   ['sale', 'New sale'],
   ['history', 'History'],
-  ["reports", "Reports"],
+  ['reports', 'Reports'],
   ['products', 'Products'],
   ['expenses', 'Expenses'],
+  ['users', 'Staff'],
+]
+const REP_TABS = [
+  ['rep-dashboard', 'Dashboard'],
+  ['sale', 'New sale'],
+  ['history', 'My sales'],
 ]
 
-export default function App() {
-  const [tab, setTab] = useState('dashboard')
+export default function App({ user, onLogout }) {
+  const isAdmin = user.role === 'admin'
+  const tabs = isAdmin ? ADMIN_TABS : REP_TABS
+  const [tab, setTab] = useState(tabs[0][0])
   const [products, setProducts] = useState([])
   const [report, setReport] = useState(null)
   const [expenses, setExpenses] = useState([])
@@ -55,18 +48,25 @@ export default function App() {
 
   async function load() {
     try {
-      const [p, r, e, s] = await Promise.all([
-        api('/products'),
-        api('/reports/today'),
-        api('/expenses'),
-        api('/sales/recent'),
-      ])
-      setProducts(p)
-      setReport(r)
-      setExpenses(e)
-      setRecent(s)
-    } catch {
-      notify('Cannot reach the server. Is the Go server still running?', 'error')
+      if (isAdmin) {
+        const [p, r, e, s] = await Promise.all([
+          api('/products'),
+          api('/reports/today'),
+          api('/expenses'),
+          api('/sales/recent'),
+        ])
+        setProducts(p)
+        setReport(r)
+        setExpenses(e)
+        setRecent(s)
+      } else {
+        setProducts(await api('/products'))
+      }
+    } catch (err) {
+      notify(
+        err instanceof TypeError ? 'Cannot reach the server. Is the Go server still running?' : err.message,
+        'error',
+      )
     }
   }
 
@@ -79,14 +79,8 @@ export default function App() {
       <div className="topbar">
         <div className="topbar-inner">
           <div className="brand">ShopManager</div>
-          <button
-            className="theme-btn"
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          >
-            {theme === 'dark' ? '☀ Light mode' : '🌙 Dark mode'}
-          </button>
           <div className="tabs">
-            {TABS.map(([key, label]) => (
+            {tabs.map(([key, label]) => (
               <button
                 key={key}
                 className={'tab' + (tab === key ? ' active' : '')}
@@ -96,18 +90,27 @@ export default function App() {
               </button>
             ))}
           </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', color: '#fff', fontSize: 14 }}>
+            <span>{user.username} ({isAdmin ? 'Manager' : 'Sales rep'})</span>
+            <button className="theme-btn" style={{ margin: 0 }} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+              {theme === 'dark' ? '☀ Light' : '🌙 Dark'}
+            </button>
+            <button className="theme-btn" style={{ margin: 0 }} onClick={onLogout}>Log out</button>
+          </div>
         </div>
       </div>
 
       <div className="page">
-        {tab === 'dashboard' && <Dashboard report={report} recent={recent} />}
-        {tab === 'sale' && <SaleScreen products={products} reload={load} notify={notify} />}
-        {tab === 'history' && <HistoryScreen notify={notify} reload={load} />}
-        {tab === "reports" && <ReportsScreen />}
-        {tab === 'products' && <Products products={products} reload={load} notify={notify} />}
-        {tab === 'expenses' && (
+        {tab === 'dashboard' && isAdmin && <Dashboard report={report} recent={recent} />}
+        {tab === 'rep-dashboard' && !isAdmin && <RepDashboard />}
+        {tab === 'sale' && <SaleScreen products={products} reload={load} notify={notify} isAdmin={isAdmin} />}
+        {tab === 'history' && <HistoryScreen notify={notify} reload={load} isAdmin={isAdmin} />}
+        {tab === 'reports' && isAdmin && <ReportsScreen />}
+        {tab === 'products' && isAdmin && <Products products={products} reload={load} notify={notify} />}
+        {tab === 'expenses' && isAdmin && (
           <Expenses expenses={expenses} report={report} reload={load} notify={notify} />
         )}
+        {tab === 'users' && isAdmin && <UsersScreen notify={notify} currentUserId={user.id} />}
       </div>
 
       {message && <div className={'toast ' + message.type}>{message.text}</div>}
@@ -121,6 +124,57 @@ function Stat({ label, value, tone }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  )
+}
+
+
+function RepDashboard() {
+  const [summary, setSummary] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    api('/sales/my-summary')
+      .then(data => {
+        if (alive) setSummary(data)
+      })
+      .catch(err => {
+        if (alive) setError(err.message || 'Could not load your sales summary')
+      })
+    return () => { alive = false }
+  }, [])
+
+  if (error) {
+    return <div className="card">
+      <h2>My dashboard</h2>
+      <p className="low">{error}</p>
+      <button onClick={() => window.location.reload()}>Try again</button>
+    </div>
+  }
+
+  if (!summary) return <div className="card">Loading your dashboard...</div>
+
+  return (
+    <>
+      <div className="card">
+        <h2>My dashboard</h2>
+        <p>Today's figures for your sales account.</p>
+      </div>
+      <div className="stats">
+        <Stat label="Sales revenue today" value={naira(summary.revenue)} />
+        <Stat label="Transactions" value={summary.transactions} />
+        <Stat label="Items sold" value={summary.items_sold} />
+        <Stat label="Cash received" value={naira(summary.cash_received)} />
+        <Stat label="Transfers received" value={naira(summary.transfer_received)} />
+        <Stat label="POS received" value={naira(summary.pos_received)} />
+        <Stat label="Cash change paid" value={naira(summary.cash_change_paid)} />
+        <Stat
+          label="Net cash drawer movement"
+          value={naira(summary.cash_drawer_net)}
+          tone={summary.cash_drawer_net < 0 ? 'bad' : 'good'}
+        />
+      </div>
+    </>
   )
 }
 
@@ -191,157 +245,6 @@ function Dashboard({ report, recent }) {
         )}
       </div>
     </>
-  )
-}
-
-function Sale({ products, reload, notify }) {
-  const [search, setSearch] = useState('')
-  const [cart, setCart] = useState([])
-
-  const shown = products.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
-  const total = cart.reduce((sum, c) => sum + c.price * c.qty, 0)
-
-  function add(p) {
-    const inCart = cart.find((c) => c.id === p.id)
-    const qty = inCart ? inCart.qty : 0
-    if (qty + 1 > p.stock) {
-      notify(`Only ${p.stock} of ${p.name} in stock`, 'error')
-      return
-    }
-    if (inCart) {
-      setCart(cart.map((c) => (c.id === p.id ? { ...c, qty: c.qty + 1 } : c)))
-    } else {
-      setCart([...cart, { id: p.id, name: p.name, price: p.selling_price, stock: p.stock, qty: 1 }])
-    }
-  }
-
-  function change(id, delta) {
-    setCart(
-      cart.flatMap((c) => {
-        if (c.id !== id) return [c]
-        const qty = c.qty + delta
-        if (qty > c.stock) return [c]
-        return qty > 0 ? [{ ...c, qty }] : []
-      }),
-    )
-  }
-
-  async function complete() {
-    try {
-      const r = await api('/sales', {
-        method: 'POST',
-        body: JSON.stringify({ items: cart.map((c) => ({ product_id: c.id, qty: c.qty })) }),
-      })
-      setCart([])
-      notify(`Sale complete: ${naira(r.total)}`)
-      reload()
-    } catch (e) {
-      notify(e.message, 'error')
-    }
-  }
-
-  return (
-    <div className="pos">
-      <div className="card">
-        <h2>Products</h2>
-        <input
-          autoFocus
-          placeholder="Type a product name and press Enter..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter') return
-            if (shown.length > 0) {
-              add(shown[0])
-              setSearch('')
-            } else {
-              notify('No product matches that name', 'error')
-            }
-          }}
-        />
-        {products.length === 0 && <div className="empty">Add products in the Products tab first.</div>}
-        <div className="tiles">
-          {shown.map((p) => (
-            <button key={p.id} className="tile" disabled={p.stock === 0} onClick={() => add(p)}>
-              <strong>{p.name}</strong>
-              <span>{naira(p.selling_price)}</span>
-              <span className={p.stock <= p.low_stock_level ? 'low' : ''}>
-                {p.stock === 0 ? 'Out of stock' : `${p.stock} in stock`}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="card">
-        <h2>Current sale</h2>
-        {cart.length === 0 && <div className="empty">Tap a product to add it.</div>}
-        {cart.map((c) => (
-          <div key={c.id} className="cart-line">
-            <div className="name">
-              {c.name}
-              <div className="muted">{naira(c.price)} each</div>
-            </div>
-            <div className="qty">
-              <button onClick={() => change(c.id, -1)}>-</button>
-              <strong>{c.qty}</strong>
-              <button onClick={() => change(c.id, 1)}>+</button>
-            </div>
-            <strong>{naira(c.price * c.qty)}</strong>
-          </div>
-        ))}
-        {cart.length > 0 && (
-          <>
-            <div className="cart-total">
-              <span>Total</span>
-              <span>{naira(total)}</span>
-            </div>
-            <button onClick={complete}>Complete sale</button>
-            <button className="ghost" style={{ width: '100%', marginTop: 8 }} onClick={() => setCart([])}>
-              Clear
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function History() {
-  const [sales, setSales] = useState(null)
-
-  useEffect(() => {
-    api('/sales/history')
-      .then(setSales)
-      .catch(() => setSales([]))
-  }, [])
-
-  return (
-    <div className="card">
-      <h2>Transaction history</h2>
-      {sales === null && <div className="empty">Loading...</div>}
-      {sales && sales.length === 0 && <div className="empty">No sales recorded yet.</div>}
-      {sales && sales.length > 0 && (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Receipt</th><th>Time</th><th>Items sold</th><th>Total</th><th>Profit</th></tr>
-            </thead>
-            <tbody>
-              {sales.map((s) => (
-                <tr key={s.id}>
-                  <td>#{s.id}</td>
-                  <td>{when(s.created_at)}</td>
-                  <td>{s.items}</td>
-                  <td>{naira(s.total)}</td>
-                  <td className="ok">{naira(s.profit)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
   )
 }
 

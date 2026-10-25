@@ -225,6 +225,8 @@ func requiredRole(r *http.Request) string {
 		return "any"
 	case m == "GET" && p == "/sales/history":
 		return "any"
+	case m == "GET" && p == "/sales/my-summary":
+		return "any"
 	case m == "POST" && strings.HasPrefix(p, "/sales/") && strings.HasSuffix(p, "/void"):
 		return "any"
 	}
@@ -514,6 +516,7 @@ func registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/login", login)
 	mux.HandleFunc("POST /auth/logout", logout)
 	mux.HandleFunc("GET /auth/me", me)
+	mux.HandleFunc("GET /sales/my-summary", mySalesSummary)
 	mux.HandleFunc("GET /users", listUsers)
 	mux.HandleFunc("POST /users", createUser)
 	mux.HandleFunc("POST /users/{id}/password", resetPassword)
@@ -555,6 +558,7 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "send at least one item", 400)
 		return
 	}
+
 	method := req.PaymentMethod
 	if method == "" {
 		method = "cash"
@@ -584,19 +588,25 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "qty must be positive", 400)
 			return
 		}
+
 		var name string
 		var price, cost int64
 		var stock int
-		err := tx.QueryRow(`SELECT name, selling_price, cost_price, stock FROM products WHERE id = ?`,
-			it.ProductID).Scan(&name, &price, &cost, &stock)
+		err := tx.QueryRow(
+			`SELECT name, selling_price, cost_price, stock FROM products WHERE id = ?`,
+			it.ProductID,
+		).Scan(&name, &price, &cost, &stock)
+
 		if err == sql.ErrNoRows {
 			http.Error(w, "product not found", 404)
 			return
-		} else if err != nil {
+		}
+		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		// Only managers may change the price. For reps the saved price is always used.
+
+		// Only admins can override the saved selling price.
 		if it.Price != nil && u.Role == "admin" {
 			if *it.Price < 0 {
 				http.Error(w, "price cannot be negative", 400)
@@ -608,27 +618,56 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not enough stock for "+name, 409)
 			return
 		}
-		if _, err := tx.Exec(`INSERT INTO sale_items (sale_id, product_id, qty, unit_price, unit_cost)
-			VALUES (?, ?, ?, ?, ?)`, saleID, it.ProductID, it.Qty, price, cost); err != nil {
+
+		if _, err := tx.Exec(
+			`INSERT INTO sale_items (sale_id, product_id, qty, unit_price, unit_cost)
+			 VALUES (?, ?, ?, ?, ?)`,
+			saleID, it.ProductID, it.Qty, price, cost,
+		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		if _, err := tx.Exec(`UPDATE products SET stock = stock - ? WHERE id = ?`, it.Qty, it.ProductID); err != nil {
+		if _, err := tx.Exec(
+			`UPDATE products SET stock = stock - ? WHERE id = ?`,
+			it.Qty, it.ProductID,
+		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 		total += price * int64(it.Qty)
 	}
 
-	if _, err := tx.Exec(`UPDATE sales SET total = ?, payment_method = ? WHERE id = ?`, total, method, saleID); err != nil {
+	received := req.AmountReceived
+	// Older clients that omit this field are treated as exact payment.
+	if received == 0 {
+		received = total
+	}
+	if received < total {
+		http.Error(w, "amount received is less than the sale total", 400)
+		return
+	}
+	change := received - total
+
+	if _, err := tx.Exec(
+		`UPDATE sales
+		 SET total = ?, payment_method = ?, amount_received = ?, change_given = ?
+		 WHERE id = ?`,
+		total, method, received, change, saleID,
+	); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+
 	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	writeJSON(w, 201, map[string]any{"sale_id": saleID, "total": total})
+	writeJSON(w, 201, map[string]any{
+		"sale_id":         saleID,
+		"total":           total,
+		"amount_received": received,
+		"change_given":    change,
+	})
 }
 
 // Reps can void only their own sales. The manager can void any sale. Who voided is recorded.
@@ -718,6 +757,64 @@ type HistoryRow struct {
 }
 
 // Managers see every sale with profit. Reps see only their own sales, with no profit.
+
+func mySalesSummary(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+
+	var revenue, transactions, units int64
+	var cashReceived, transferReceived, posReceived int64
+	var changePaid int64
+
+	err := db.QueryRow(`
+        SELECT
+            COALESCE(SUM(CASE WHEN s.status = 'completed'
+                THEN si.qty * si.unit_price ELSE 0 END), 0),
+            COUNT(DISTINCT CASE WHEN s.status = 'completed' THEN s.id END),
+            COALESCE(SUM(CASE WHEN s.status = 'completed'
+                THEN si.qty ELSE 0 END), 0)
+        FROM sales s
+        LEFT JOIN sale_items si ON si.sale_id = s.id
+        WHERE s.user_id = ?
+          AND date(s.created_at, '+1 hour') = date('now', '+1 hour')
+    `, u.ID).Scan(&revenue, &transactions, &units)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = db.QueryRow(`
+        SELECT
+            COALESCE(SUM(CASE WHEN payment_method = 'cash'
+                THEN amount_received ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN payment_method = 'transfer'
+                THEN amount_received ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN payment_method = 'pos'
+                THEN amount_received ELSE 0 END), 0),
+            COALESCE(SUM(change_given), 0)
+        FROM sales
+        WHERE user_id = ?
+          AND status = 'completed'
+          AND date(created_at, '+1 hour') = date('now', '+1 hour')
+    `, u.ID).Scan(
+		&cashReceived, &transferReceived, &posReceived, &changePaid,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]int64{
+		"revenue":           revenue,
+		"transactions":      transactions,
+		"items_sold":        units,
+		"cash_received":     cashReceived,
+		"transfer_received": transferReceived,
+		"pos_received":      posReceived,
+		"cash_change_paid":  changePaid,
+		"cash_drawer_net":   cashReceived - changePaid,
+	})
+}
+
 func salesHistoryV2(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	q := `SELECT s.id, s.created_at, s.total,
