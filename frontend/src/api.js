@@ -23,7 +23,7 @@ export async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) }
   if (auth && auth.token) headers.Authorization = 'Bearer ' + auth.token
   const res = await fetch(API + path, { ...options, headers })
-  if (res.status === 401 && auth) {
+  if (res.status === 401 && auth && !path.startsWith('/auth/')) {
     clearAuth()
     window.location.reload()
   }
