@@ -1,4 +1,4 @@
-export const API = import.meta.env.DEV ? 'http://localhost:8080' : '/api'
+export const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8080' : '/api')
 
 const KEY = 'shopmanager-auth'
 
@@ -28,7 +28,9 @@ export async function api(path, options = {}) {
     window.location.reload()
   }
   if (!res.ok) throw new Error((await res.text()).trim())
-  return res.json()
+  if (res.status === 204) return null
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
 }
 
 export async function downloadCSV(from, to) {

@@ -19,6 +19,7 @@ const REP_TABS = [
   ['rep-dashboard', 'Dashboard'],
   ['sale', 'New sale'],
   ['history', 'My sales'],
+  ['expenses', 'Expenses'],
 ]
 
 export default function App({ user, onLogout }) {
@@ -60,7 +61,12 @@ export default function App({ user, onLogout }) {
         setExpenses(e)
         setRecent(s)
       } else {
-        setProducts(await api('/products'))
+        const [p, e] = await Promise.all([
+          api('/products'),
+          api('/expenses'),
+        ])
+        setProducts(p)
+        setExpenses(e)
       }
     } catch (err) {
       notify(
@@ -107,8 +113,8 @@ export default function App({ user, onLogout }) {
         {tab === 'history' && <HistoryScreen notify={notify} reload={load} isAdmin={isAdmin} />}
         {tab === 'reports' && isAdmin && <ReportsScreen />}
         {tab === 'products' && isAdmin && <Products products={products} reload={load} notify={notify} />}
-        {tab === 'expenses' && isAdmin && (
-          <Expenses expenses={expenses} report={report} reload={load} notify={notify} />
+        {tab === 'expenses' && (
+          <Expenses expenses={expenses} report={report} reload={load} notify={notify} isAdmin={isAdmin} />
         )}
         {tab === 'users' && isAdmin && <UsersScreen notify={notify} currentUserId={user.id} />}
       </div>
@@ -389,22 +395,52 @@ function Products({ products, reload, notify }) {
   )
 }
 
-function Expenses({ expenses, report, reload, notify }) {
+function Expenses({ expenses, report, reload, notify, isAdmin }) {
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
   const [date, setDate] = useState('')
+  const [paymentSource, setPaymentSource] = useState('company')
 
   async function add(e) {
     e.preventDefault()
     try {
       await api('/expenses', {
         method: 'POST',
-        body: JSON.stringify({ description, amount: toKobo(amount), date }),
+        body: JSON.stringify({
+          description,
+          amount: toKobo(amount),
+          date,
+          payment_source: paymentSource,
+        }),
       })
       setDescription('')
       setAmount('')
       setDate('')
-      notify('Expense recorded')
+      setPaymentSource('company')
+      notify(isAdmin ? 'Expense recorded' : 'Expense submitted for manager review')
+      reload()
+    } catch (err) {
+      notify(err.message, 'error')
+    }
+  }
+
+  async function review(x, status) {
+    try {
+      await api(`/expenses/${x.id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ status, note: '' }),
+      })
+      notify(`Expense ${status}`)
+      reload()
+    } catch (err) {
+      notify(err.message, 'error')
+    }
+  }
+
+  async function reimburse(x) {
+    try {
+      await api(`/expenses/${x.id}/reimburse`, { method: 'POST' })
+      notify('Expense marked as reimbursed')
       reload()
     } catch (err) {
       notify(err.message, 'error')
@@ -413,14 +449,14 @@ function Expenses({ expenses, report, reload, notify }) {
 
   return (
     <>
-      {report && (
+      {report && isAdmin && (
         <div className="stats">
-          <Stat label="Expenses today" value={naira(report.expenses)} />
+          <Stat label="Approved expenses today" value={naira(report.expenses)} />
         </div>
       )}
 
       <div className="card">
-        <h2>Record an expense</h2>
+        <h2>{isAdmin ? 'Record an expense' : 'Submit an expense'}</h2>
         <form className="form-grid" onSubmit={add}>
           <label className="field"><span>What was it for?</span>
             <input required value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Generator fuel" />
@@ -428,21 +464,35 @@ function Expenses({ expenses, report, reload, notify }) {
           <label className="field"><span>Amount (₦)</span>
             <input required type="number" min="1" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} />
           </label>
+          <label className="field"><span>Payment source</span>
+            <select value={paymentSource} onChange={(e) => setPaymentSource(e.target.value)}>
+              <option value="company">Company funds</option>
+              <option value="personal">Personal pocket (reimbursable)</option>
+            </select>
+          </label>
           <label className="field"><span>Date (leave empty for today)</span>
             <input type="date" max={new Date().toISOString().slice(0, 10)} value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
-          <button type="submit">Save expense</button>
+          <button type="submit">{isAdmin ? 'Save expense' : 'Submit for review'}</button>
         </form>
       </div>
 
       <div className="card">
-        <h2>Recent expenses</h2>
+        <h2>{isAdmin ? 'All expenses' : 'My submitted expenses'}</h2>
         {expenses.length === 0 && <div className="empty">No expenses recorded yet.</div>}
         {expenses.length > 0 && (
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>When</th><th>Description</th><th>Amount</th></tr>
+                <tr>
+                  <th>When</th>
+                  <th>Description</th>
+                  <th>Amount</th>
+                  {isAdmin && <th>Submitted by</th>}
+                  <th>Source</th>
+                  <th>Status</th>
+                  {isAdmin && <th>Actions</th>}
+                </tr>
               </thead>
               <tbody>
                 {expenses.map((x) => (
@@ -450,6 +500,31 @@ function Expenses({ expenses, report, reload, notify }) {
                     <td>{when(x.created_at)}</td>
                     <td>{x.description}</td>
                     <td>{naira(x.amount)}</td>
+                    {isAdmin && <td>{x.submitted_by_name || 'Manager'}</td>}
+                    <td>{x.payment_source === 'personal' ? 'Personal' : 'Company'}</td>
+                    <td>
+                      <span className={x.status === 'approved' ? 'ok' : x.status === 'rejected' ? 'low' : 'muted'}>
+                        {x.status === 'approved' ? 'Approved' : x.status === 'rejected' ? 'Rejected' : 'Pending review'}
+                      </span>
+                      {x.payment_source === 'personal' && x.status === 'approved' && (
+                        <div style={{ fontSize: 12 }} className={x.reimbursement_status === 'paid' ? 'ok' : 'low'}>
+                          {x.reimbursement_status === 'paid' ? 'Reimbursed' : 'Unpaid reimbursement'}
+                        </div>
+                      )}
+                    </td>
+                    {isAdmin && (
+                      <td className="actions">
+                        {x.status === 'pending' && (
+                          <>
+                            <button onClick={() => review(x, 'approved')}>Approve</button>
+                            <button className="ghost danger" onClick={() => review(x, 'rejected')}>Reject</button>
+                          </>
+                        )}
+                        {x.status === 'approved' && x.payment_source === 'personal' && x.reimbursement_status === 'unpaid' && (
+                          <button onClick={() => reimburse(x)}>Reimburse</button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

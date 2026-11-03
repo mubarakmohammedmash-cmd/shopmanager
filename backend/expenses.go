@@ -93,6 +93,9 @@ func createExpense(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := "pending"
+	if u.Role == "admin" {
+		status = "approved"
+	}
 	reimbursement := "not_applicable"
 
 	if in.PaymentSource == "personal" {

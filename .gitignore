@@ -1,3 +1,5 @@
+*.db
+*.db-*
 backend/shop.db
 backend/shop.db-*
 node_modules/
