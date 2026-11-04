@@ -23,9 +23,11 @@ import (
 const pbkdf2Iter = 600000
 
 type authUser struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	ID        int64  `json:"id"`
+	Username  string `json:"username"`
+	Role      string `json:"role"`
+	StoreName string `json:"store_name"`
+	StoreID   int64  `json:"-"`
 }
 
 type ctxKey struct{}
@@ -72,11 +74,45 @@ func migrateAuth() {
 			user_id    INTEGER NOT NULL REFERENCES users(id),
 			expires_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS store_settings (
+			id         INTEGER PRIMARY KEY CHECK (id = 1),
+			store_name TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS stores (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
 			log.Fatal(err)
 		}
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO store_settings (id, store_name) VALUES (1, 'ShopManager')`); err != nil {
+		log.Fatal(err)
+	}
+	for _, table := range []string{"users", "products", "sales", "expenses"} {
+		if !hasColumn(table, "store_id") {
+			if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN store_id INTEGER REFERENCES stores(id)`); err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO stores (id, name)
+		SELECT 1, store_name FROM store_settings WHERE id = 1 AND EXISTS (SELECT 1 FROM users)`); err != nil {
+		log.Fatal(err)
+	}
+	for _, table := range []string{"users", "products", "sales", "expenses"} {
+		if _, err := db.Exec(`UPDATE ` + table + ` SET store_id = 1 WHERE store_id IS NULL AND EXISTS (SELECT 1 FROM stores WHERE id = 1)`); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS users_store_idx ON users(store_id);
+		CREATE INDEX IF NOT EXISTS products_store_idx ON products(store_id);
+		CREATE INDEX IF NOT EXISTS sales_store_idx ON sales(store_id);
+		CREATE INDEX IF NOT EXISTS expenses_store_idx ON expenses(store_id)`); err != nil {
+		log.Fatal(err)
 	}
 	for _, c := range []string{"user_id", "voided_by"} {
 		if !hasColumn("sales", c) {
@@ -158,10 +194,11 @@ func userFromRequest(r *http.Request) (authUser, bool) {
 		return authUser{}, false
 	}
 	var u authUser
-	err := db.QueryRow(`SELECT u.id, u.username, u.role
+	err := db.QueryRow(`SELECT u.id, u.username, u.role, st.name, u.store_id
 		FROM sessions s JOIN users u ON u.id = s.user_id
+		JOIN stores st ON st.id = u.store_id
 		WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1`,
-		hashToken(t)).Scan(&u.ID, &u.Username, &u.Role)
+		hashToken(t)).Scan(&u.ID, &u.Username, &u.Role, &u.StoreName, &u.StoreID)
 	return u, err == nil
 }
 
@@ -213,6 +250,8 @@ func requiredRole(r *http.Request) string {
 		return "public"
 	case m == "POST" && p == "/auth/setup":
 		return "public"
+	case m == "POST" && p == "/auth/signup":
+		return "public"
 	case m == "POST" && p == "/auth/login":
 		return "public"
 	case m == "GET" && p == "/auth/me":
@@ -260,9 +299,10 @@ func withAuth(next http.Handler) http.Handler {
 // ---------- login, setup, accounts ----------
 
 type credsReq struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Role     string `json:"role"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	Role      string `json:"role"`
+	StoreName string `json:"store_name"`
 }
 
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{3,30}$`)
@@ -289,11 +329,10 @@ func authStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"setup_needed": n == 0})
+	writeJSON(w, 200, map[string]any{"setup_needed": n == 0, "signup_enabled": true})
 }
 
-// Creates the first manager account. Only works while there are no users at all.
-func setup(w http.ResponseWriter, r *http.Request) {
+func signup(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var in credsReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -305,19 +344,44 @@ func setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, 400)
 		return
 	}
+	in.StoreName = strings.TrimSpace(in.StoreName)
+	if in.StoreName == "" || len([]rune(in.StoreName)) > 80 {
+		http.Error(w, "store name must be 1 to 80 characters", 400)
+		return
+	}
 	hash, err := hashPassword(in.Password)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	res, err := db.Exec(`INSERT INTO users (username, password_hash, role)
-		SELECT ?, ?, 'admin' WHERE NOT EXISTS (SELECT 1 FROM users)`, in.Username, hash)
+	tx, err := db.Begin()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		http.Error(w, "setup is already done", 409)
+	defer tx.Rollback()
+	storeResult, err := tx.Exec(`INSERT INTO stores (name) VALUES (?)`, in.StoreName)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	storeID, err := storeResult.LastInsertId()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	res, err := tx.Exec(`INSERT INTO users (username, password_hash, role, store_id)
+		VALUES (?, ?, 'admin', ?)`, in.Username, hash, storeID)
+	if err != nil {
+		if strings.Contains(strings.ToUpper(err.Error()), "UNIQUE") {
+			http.Error(w, "that username is already taken; choose another username", 409)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), 500)
 		return
 	}
 	id, _ := res.LastInsertId()
@@ -326,7 +390,11 @@ func setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	writeJSON(w, 201, map[string]any{"token": token, "user": authUser{ID: id, Username: in.Username, Role: "admin"}})
+	writeJSON(w, 201, map[string]any{"token": token, "user": authUser{ID: id, Username: in.Username, Role: "admin", StoreName: in.StoreName, StoreID: storeID}})
+}
+
+func setup(w http.ResponseWriter, r *http.Request) {
+	signup(w, r)
 }
 
 func login(w http.ResponseWriter, r *http.Request) {
@@ -346,8 +414,9 @@ func login(w http.ResponseWriter, r *http.Request) {
 	var u authUser
 	var hash string
 	var active int
-	err := db.QueryRow(`SELECT id, username, role, password_hash, active FROM users WHERE username = ?`,
-		name).Scan(&u.ID, &u.Username, &u.Role, &hash, &active)
+	err := db.QueryRow(`SELECT u.id, u.username, u.role, u.password_hash, u.active, u.store_id, s.name
+		FROM users u JOIN stores s ON s.id = u.store_id WHERE u.username = ?`,
+		name).Scan(&u.ID, &u.Username, &u.Role, &hash, &active, &u.StoreID, &u.StoreName)
 	if err != nil {
 		checkPassword(dummyHash, in.Password)
 		recordFail(key)
@@ -377,6 +446,36 @@ func me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, currentUser(r))
 }
 
+func getStore(w http.ResponseWriter, r *http.Request) {
+	var storeName string
+	if err := db.QueryRow(`SELECT name FROM stores WHERE id = ?`, currentUser(r).StoreID).Scan(&storeName); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"store_name": storeName})
+}
+
+func updateStore(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var in struct {
+		StoreName string `json:"store_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	in.StoreName = strings.TrimSpace(in.StoreName)
+	if in.StoreName == "" || len([]rune(in.StoreName)) > 80 {
+		http.Error(w, "store name must be 1 to 80 characters", 400)
+		return
+	}
+	if _, err := db.Exec(`UPDATE stores SET name = ? WHERE id = ?`, in.StoreName, currentUser(r).StoreID); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"store_name": in.StoreName})
+}
+
 type UserRow struct {
 	ID        int64  `json:"id"`
 	Username  string `json:"username"`
@@ -386,7 +485,7 @@ type UserRow struct {
 }
 
 func listUsers(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query(`SELECT id, username, role, active, created_at FROM users ORDER BY id`)
+	rows, err := db.Query(`SELECT id, username, role, active, created_at FROM users WHERE store_id = ? ORDER BY id`, currentUser(r).StoreID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -430,8 +529,9 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	res, err := db.Exec(`INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)`,
-		in.Username, hash, in.Role)
+	u := currentUser(r)
+	res, err := db.Exec(`INSERT INTO users (username, password_hash, role, store_id) VALUES (?, ?, ?, ?)`,
+		in.Username, hash, in.Role, u.StoreID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			http.Error(w, "that username is already taken", 409)
@@ -465,7 +565,7 @@ func resetPassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	res, err := db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, hash, id)
+	res, err := db.Exec(`UPDATE users SET password_hash = ? WHERE id = ? AND store_id = ?`, hash, id, currentUser(r).StoreID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -499,7 +599,7 @@ func setActive(w http.ResponseWriter, r *http.Request) {
 	if in.Active {
 		flag = 1
 	}
-	res, err := db.Exec(`UPDATE users SET active = ? WHERE id = ?`, flag, id)
+	res, err := db.Exec(`UPDATE users SET active = ? WHERE id = ? AND store_id = ?`, flag, id, currentUser(r).StoreID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -516,10 +616,13 @@ func setActive(w http.ResponseWriter, r *http.Request) {
 
 func registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/status", authStatus)
+	mux.HandleFunc("POST /auth/signup", signup)
 	mux.HandleFunc("POST /auth/setup", setup)
 	mux.HandleFunc("POST /auth/login", login)
 	mux.HandleFunc("POST /auth/logout", logout)
 	mux.HandleFunc("GET /auth/me", me)
+	mux.HandleFunc("GET /store", getStore)
+	mux.HandleFunc("PUT /store", updateStore)
 	mux.HandleFunc("GET /sales/my-summary", mySalesSummary)
 	mux.HandleFunc("GET /users", listUsers)
 	mux.HandleFunc("POST /users", createUser)
@@ -539,7 +642,7 @@ type RepProduct struct {
 
 // Managers get cost prices. Reps never receive them.
 func listProductsV2(w http.ResponseWriter, r *http.Request) {
-	products, err := queryProducts("")
+	products, err := queryProducts(currentUser(r).StoreID, "")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -579,7 +682,7 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(`INSERT INTO sales (total, user_id) VALUES (0, ?)`, u.ID)
+	res, err := tx.Exec(`INSERT INTO sales (total, user_id, store_id) VALUES (0, ?, ?)`, u.ID, u.StoreID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -597,8 +700,8 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 		var price, cost int64
 		var stock int
 		err := tx.QueryRow(
-			`SELECT name, selling_price, cost_price, stock FROM products WHERE id = ?`,
-			it.ProductID,
+			`SELECT name, selling_price, cost_price, stock FROM products WHERE id = ? AND store_id = ?`,
+			it.ProductID, u.StoreID,
 		).Scan(&name, &price, &cost, &stock)
 
 		if err == sql.ErrNoRows {
@@ -632,8 +735,8 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := tx.Exec(
-			`UPDATE products SET stock = stock - ? WHERE id = ?`,
-			it.Qty, it.ProductID,
+			`UPDATE products SET stock = stock - ? WHERE id = ? AND store_id = ?`,
+			it.Qty, it.ProductID, u.StoreID,
 		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -655,8 +758,8 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.Exec(
 		`UPDATE sales
 		 SET total = ?, payment_method = ?, amount_received = ?, change_given = ?
-		 WHERE id = ?`,
-		total, method, received, change, saleID,
+		 WHERE id = ? AND store_id = ?`,
+		total, method, received, change, saleID, u.StoreID,
 	); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -692,7 +795,7 @@ func voidSaleV2(w http.ResponseWriter, r *http.Request) {
 
 	var status string
 	var owner sql.NullInt64
-	err = tx.QueryRow(`SELECT status, user_id FROM sales WHERE id = ?`, id).Scan(&status, &owner)
+	err = tx.QueryRow(`SELECT status, user_id FROM sales WHERE id = ? AND store_id = ?`, id, u.StoreID).Scan(&status, &owner)
 	if err == sql.ErrNoRows {
 		http.Error(w, "sale not found", 404)
 		return
@@ -731,13 +834,13 @@ func voidSaleV2(w http.ResponseWriter, r *http.Request) {
 	rows.Close()
 
 	for _, l := range lines {
-		if _, err := tx.Exec(`UPDATE products SET stock = stock + ? WHERE id = ?`, l.qty, l.productID); err != nil {
+		if _, err := tx.Exec(`UPDATE products SET stock = stock + ? WHERE id = ? AND store_id = ?`, l.qty, l.productID, u.StoreID); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 	}
-	if _, err := tx.Exec(`UPDATE sales SET status = 'voided', voided_at = datetime('now'), voided_by = ? WHERE id = ?`,
-		u.ID, id); err != nil {
+	if _, err := tx.Exec(`UPDATE sales SET status = 'voided', voided_at = datetime('now'), voided_by = ? WHERE id = ? AND store_id = ?`,
+		u.ID, id, u.StoreID); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -778,9 +881,9 @@ func mySalesSummary(w http.ResponseWriter, r *http.Request) {
                 THEN si.qty ELSE 0 END), 0)
         FROM sales s
         LEFT JOIN sale_items si ON si.sale_id = s.id
-        WHERE s.user_id = ?
+        WHERE s.user_id = ? AND s.store_id = ?
           AND date(s.created_at, '+1 hour') = date('now', '+1 hour')
-    `, u.ID).Scan(&revenue, &transactions, &units)
+    `, u.ID, u.StoreID).Scan(&revenue, &transactions, &units)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -796,10 +899,10 @@ func mySalesSummary(w http.ResponseWriter, r *http.Request) {
                 THEN amount_received ELSE 0 END), 0),
             COALESCE(SUM(change_given), 0)
         FROM sales
-        WHERE user_id = ?
+        WHERE user_id = ? AND store_id = ?
           AND status = 'completed'
           AND date(created_at, '+1 hour') = date('now', '+1 hour')
-    `, u.ID).Scan(
+    `, u.ID, u.StoreID).Scan(
 		&cashReceived, &transferReceived, &posReceived, &changePaid,
 	)
 	if err != nil {
@@ -831,9 +934,10 @@ func salesHistoryV2(w http.ResponseWriter, r *http.Request) {
 		JOIN products p ON p.id = si.product_id
 		LEFT JOIN users su ON su.id = s.user_id
 		LEFT JOIN users vu ON vu.id = s.voided_by`
-	args := []any{}
+	q += ` WHERE s.store_id = ?`
+	args := []any{u.StoreID}
 	if u.Role != "admin" {
-		q += ` WHERE s.user_id = ?`
+		q += ` AND s.user_id = ?`
 		args = append(args, u.ID)
 	}
 	q += ` GROUP BY s.id ORDER BY s.id DESC LIMIT 100`

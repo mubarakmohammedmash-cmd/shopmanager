@@ -211,11 +211,12 @@ func voidSale(w http.ResponseWriter, r *http.Request) {
 }
 
 func recentSales2(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
 	rows, err := db.Query(`SELECT s.id, s.created_at, s.total,
 			SUM(si.qty * (si.unit_price - si.unit_cost)), SUM(si.qty)
 		FROM sales s JOIN sale_items si ON si.sale_id = s.id
-		WHERE s.status = 'completed'
-		GROUP BY s.id ORDER BY s.id DESC LIMIT 10`)
+		WHERE s.status = 'completed' AND s.store_id = ?
+		GROUP BY s.id ORDER BY s.id DESC LIMIT 10`, u.StoreID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

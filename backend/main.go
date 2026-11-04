@@ -166,12 +166,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-func queryProducts(where string) ([]Product, error) {
-	rows, err := db.Query(`
+func queryProducts(storeID int64, condition string) ([]Product, error) {
+	query := `
 		SELECT id, name, cost_price, selling_price, stock, low_stock_level
-		FROM products ` + where + `
+		FROM products WHERE store_id = ?`
+	if condition != "" {
+		query += " AND " + strings.TrimPrefix(condition, "WHERE ")
+	}
+	query += `
 		ORDER BY name
-	`)
+	`
+	rows, err := db.Query(query, storeID)
 	if err != nil {
 		return nil, err
 	}
@@ -231,14 +236,15 @@ func createProduct(w http.ResponseWriter, r *http.Request) {
 
 	res, err := db.Exec(`
 		INSERT INTO products
-			(name, cost_price, selling_price, stock, low_stock_level)
-		VALUES (?, ?, ?, ?, ?)
+			(name, cost_price, selling_price, stock, low_stock_level, store_id)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`,
 		p.Name,
 		p.CostPrice,
 		p.SellingPrice,
 		p.Stock,
 		p.LowStockLevel,
+		currentUser(r).StoreID,
 	)
 	if err != nil {
 		log.Printf("Create product error: %v", err)
@@ -288,13 +294,14 @@ func updateProduct(w http.ResponseWriter, r *http.Request) {
 	res, err := db.Exec(`
 		UPDATE products
 		SET name = ?, cost_price = ?, selling_price = ?, low_stock_level = ?
-		WHERE id = ?
+		WHERE id = ? AND store_id = ?
 	`,
 		p.Name,
 		p.CostPrice,
 		p.SellingPrice,
 		p.LowStockLevel,
 		id,
+		currentUser(r).StoreID,
 	)
 	if err != nil {
 		log.Printf("Update product error: %v", err)
@@ -339,9 +346,10 @@ func restockProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := db.Exec(
-		`UPDATE products SET stock = stock + ? WHERE id = ?`,
+		`UPDATE products SET stock = stock + ? WHERE id = ? AND store_id = ?`,
 		req.Qty,
 		id,
+		currentUser(r).StoreID,
 	)
 	if err != nil {
 		log.Printf("Restock product error: %v", err)
@@ -363,7 +371,6 @@ func restockProduct(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-
 type RecentSale struct {
 	ID        int64  `json:"id"`
 	CreatedAt string `json:"created_at"`
@@ -377,4 +384,3 @@ type TopProduct struct {
 	Units  int    `json:"units"`
 	Profit int64  `json:"profit"`
 }
-

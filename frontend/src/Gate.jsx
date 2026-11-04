@@ -19,6 +19,14 @@ export default function Gate() {
     setUser(null)
   }
 
+  function updateStoreName(storeName) {
+    const auth = getAuth()
+    if (!auth) return
+    const updatedAuth = { ...auth, user: { ...auth.user, store_name: storeName } }
+    setAuth(updatedAuth)
+    setUser(updatedAuth.user)
+  }
+
   if (!user) {
     return (
       <Login
@@ -29,5 +37,5 @@ export default function Gate() {
       />
     )
   }
-  return <App user={user} onLogout={logout} />
+  return <App user={user} onLogout={logout} onStoreNameChange={updateStoreName} />
 }

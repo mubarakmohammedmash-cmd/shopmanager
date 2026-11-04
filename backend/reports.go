@@ -40,6 +40,7 @@ func salesHistory(w http.ResponseWriter, r *http.Request) {
 
 // Same as the old today report, but voided sales are left out.
 func todayReport2(w http.ResponseWriter, r *http.Request) {
+	storeID := currentUser(r).StoreID
 	var revenue, profit, expenses int64
 	var count int
 	err := db.QueryRow(`SELECT
@@ -48,7 +49,8 @@ func todayReport2(w http.ResponseWriter, r *http.Request) {
 			COUNT(DISTINCT s.id)
 		FROM sales s JOIN sale_items si ON si.sale_id = s.id
 		WHERE s.status = 'completed'
-		AND date(s.created_at, '+1 hour') = date('now', '+1 hour')`).Scan(&revenue, &profit, &count)
+		AND date(s.created_at, '+1 hour') = date('now', '+1 hour')
+		AND s.store_id = ?`, storeID).Scan(&revenue, &profit, &count)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -56,13 +58,14 @@ func todayReport2(w http.ResponseWriter, r *http.Request) {
 
 	err = db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM expenses
 		WHERE status = 'approved'
-		AND date(created_at, '+1 hour') = date('now', '+1 hour')`).Scan(&expenses)
+		AND date(created_at, '+1 hour') = date('now', '+1 hour')
+		AND store_id = ?`, storeID).Scan(&expenses)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 
-	low, err := queryProducts("WHERE stock <= low_stock_level")
+	low, err := queryProducts(storeID, "stock <= low_stock_level")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -73,7 +76,8 @@ func todayReport2(w http.ResponseWriter, r *http.Request) {
 		JOIN products p ON p.id = si.product_id
 		JOIN sales s ON s.id = si.sale_id
 		WHERE s.status = 'completed' AND s.created_at >= datetime('now', '-30 days')
-		GROUP BY p.id ORDER BY SUM(si.qty) DESC LIMIT 5`)
+		AND s.store_id = ?
+		GROUP BY p.id ORDER BY SUM(si.qty) DESC LIMIT 5`, storeID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

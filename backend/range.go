@@ -35,13 +35,14 @@ func rangeParams(r *http.Request) (string, string, bool) {
 	return from, to, e1 == nil && e2 == nil && from <= to
 }
 
-func topInRange(from, to string) ([]TopProduct, error) {
+func topInRange(storeID int64, from, to string) ([]TopProduct, error) {
 	rows, err := db.Query(`SELECT p.name, SUM(si.qty), SUM(si.qty * (si.unit_price - si.unit_cost))
 		FROM sale_items si
 		JOIN products p ON p.id = si.product_id
 		JOIN sales s ON s.id = si.sale_id
-		WHERE s.status = 'completed' AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
-		GROUP BY p.id ORDER BY SUM(si.qty) DESC LIMIT 10`, from, to)
+		WHERE s.status = 'completed' AND s.store_id = ?
+		AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
+		GROUP BY p.id ORDER BY SUM(si.qty) DESC LIMIT 10`, storeID, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -57,11 +58,12 @@ func topInRange(from, to string) ([]TopProduct, error) {
 	return out, rows.Err()
 }
 
-func paymentsInRange(from, to string) ([]PaymentTotal, error) {
+func paymentsInRange(storeID int64, from, to string) ([]PaymentTotal, error) {
 	rows, err := db.Query(`SELECT s.payment_method, SUM(s.amount_received)
 		FROM sales s
-		WHERE s.status = 'completed' AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
-		GROUP BY s.payment_method ORDER BY SUM(s.amount_received) DESC`, from, to)
+		WHERE s.status = 'completed' AND s.store_id = ?
+		AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
+		GROUP BY s.payment_method ORDER BY SUM(s.amount_received) DESC`, storeID, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -77,13 +79,14 @@ func paymentsInRange(from, to string) ([]PaymentTotal, error) {
 	return out, rows.Err()
 }
 
-func daysInRange(from, to string) ([]DayTotal, error) {
+func daysInRange(storeID int64, from, to string) ([]DayTotal, error) {
 	rows, err := db.Query(`SELECT date(s.created_at, '+1 hour'),
 			SUM(si.qty * si.unit_price),
 			SUM(si.qty * (si.unit_price - si.unit_cost))
 		FROM sales s JOIN sale_items si ON si.sale_id = s.id
-		WHERE s.status = 'completed' AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
-		GROUP BY date(s.created_at, '+1 hour') ORDER BY 1 DESC`, from, to)
+		WHERE s.status = 'completed' AND s.store_id = ?
+		AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
+		GROUP BY date(s.created_at, '+1 hour') ORDER BY 1 DESC`, storeID, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +103,7 @@ func daysInRange(from, to string) ([]DayTotal, error) {
 }
 
 func rangeReport(w http.ResponseWriter, r *http.Request) {
+	storeID := currentUser(r).StoreID
 	from, to, ok := rangeParams(r)
 	if !ok {
 		http.Error(w, "dates must look like 2026-10-01, and from must not be after to", 400)
@@ -113,36 +117,37 @@ func rangeReport(w http.ResponseWriter, r *http.Request) {
 			COALESCE(SUM(si.qty * (si.unit_price - si.unit_cost)), 0),
 			COUNT(DISTINCT s.id)
 		FROM sales s JOIN sale_items si ON si.sale_id = s.id
-		WHERE s.status = 'completed' AND date(s.created_at, '+1 hour') BETWEEN ? AND ?`,
-		from, to).Scan(&revenue, &profit, &count)
+		WHERE s.status = 'completed' AND s.store_id = ?
+		AND date(s.created_at, '+1 hour') BETWEEN ? AND ?`,
+		storeID, from, to).Scan(&revenue, &profit, &count)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	err = db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM expenses
 		WHERE status = 'approved'
-		AND date(created_at, '+1 hour') BETWEEN ? AND ?`, from, to).Scan(&expenses)
+		AND date(created_at, '+1 hour') BETWEEN ? AND ? AND store_id = ?`, from, to, storeID).Scan(&expenses)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	err = db.QueryRow(`SELECT COUNT(*) FROM sales
-		WHERE status = 'voided' AND date(created_at, '+1 hour') BETWEEN ? AND ?`, from, to).Scan(&voided)
+		WHERE status = 'voided' AND date(created_at, '+1 hour') BETWEEN ? AND ? AND store_id = ?`, from, to, storeID).Scan(&voided)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	top, err := topInRange(from, to)
+	top, err := topInRange(storeID, from, to)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	pays, err := paymentsInRange(from, to)
+	pays, err := paymentsInRange(storeID, from, to)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	days, err := daysInRange(from, to)
+	days, err := daysInRange(storeID, from, to)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -155,8 +160,9 @@ func rangeReport(w http.ResponseWriter, r *http.Request) {
 		COALESCE(SUM(CASE WHEN payment_method = 'pos' THEN amount_received ELSE 0 END), 0),
 		COALESCE(SUM(change_given), 0)
 		FROM sales
-		WHERE status = 'completed' AND date(created_at, '+1 hour') BETWEEN ? AND ?`,
-		from, to).Scan(&cashReceived, &transferReceived, &posReceived, &changePaid)
+		WHERE status = 'completed' AND date(created_at, '+1 hour') BETWEEN ? AND ?
+		AND store_id = ?`,
+		from, to, storeID).Scan(&cashReceived, &transferReceived, &posReceived, &changePaid)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -191,6 +197,7 @@ func safeCell(s string) string {
 }
 
 func exportCSV(w http.ResponseWriter, r *http.Request) {
+	storeID := currentUser(r).StoreID
 	from, to, ok := rangeParams(r)
 	if !ok {
 		http.Error(w, "dates must look like 2026-10-01, and from must not be after to", 400)
@@ -203,8 +210,8 @@ func exportCSV(w http.ResponseWriter, r *http.Request) {
 		FROM sales s
 		JOIN sale_items si ON si.sale_id = s.id
 		JOIN products p ON p.id = si.product_id
-		WHERE date(s.created_at, '+1 hour') BETWEEN ? AND ?
-		GROUP BY s.id ORDER BY s.id`, from, to)
+		WHERE s.store_id = ? AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
+		GROUP BY s.id ORDER BY s.id`, storeID, from, to)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

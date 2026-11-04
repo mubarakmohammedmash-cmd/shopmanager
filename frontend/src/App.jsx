@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { api, naira, toKobo, when } from './api.js'
 import SaleScreen from './Sale.jsx'
 import HistoryScreen from './History.jsx'
 import ReportsScreen from './Reports.jsx'
 import UsersScreen from './Users.jsx'
+import StoreScreen from './Store.jsx'
 
 const ADMIN_TABS = [
   ['dashboard', 'Dashboard'],
@@ -13,6 +14,7 @@ const ADMIN_TABS = [
   ['reports', 'Reports'],
   ['products', 'Products'],
   ['expenses', 'Expenses'],
+  ['store', 'Store'],
   ['users', 'Staff'],
 ]
 const REP_TABS = [
@@ -22,7 +24,7 @@ const REP_TABS = [
   ['expenses', 'Expenses'],
 ]
 
-export default function App({ user, onLogout }) {
+export default function App({ user, onLogout, onStoreNameChange }) {
   const isAdmin = user.role === 'admin'
   const tabs = isAdmin ? ADMIN_TABS : REP_TABS
   const [tab, setTab] = useState(tabs[0][0])
@@ -42,10 +44,10 @@ export default function App({ user, onLogout }) {
     localStorage.setItem('theme', theme)
   }, [theme])
 
-  function notify(text, type = 'ok') {
+  const notify = useCallback((text, type = 'ok') => {
     setMessage({ text, type })
     setTimeout(() => setMessage(null), 3500)
-  }
+  }, [])
 
   async function load() {
     try {
@@ -84,7 +86,7 @@ export default function App({ user, onLogout }) {
     <div className="app">
       <div className="topbar">
         <div className="topbar-inner">
-          <div className="brand">ShopManager</div>
+          <div className="brand">{user.store_name || 'ShopManager'}</div>
           <div className="tabs">
             {tabs.map(([key, label]) => (
               <button
@@ -116,6 +118,7 @@ export default function App({ user, onLogout }) {
         {tab === 'expenses' && (
           <Expenses expenses={expenses} report={report} reload={load} notify={notify} isAdmin={isAdmin} />
         )}
+        {tab === 'store' && isAdmin && <StoreScreen notify={notify} onStoreNameChange={onStoreNameChange} />}
         {tab === 'users' && isAdmin && <UsersScreen notify={notify} currentUserId={user.id} />}
       </div>
 

@@ -106,9 +106,9 @@ func createExpense(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO expenses (
 			description, amount, created_at, submitted_by,
 			submitted_by_name, payment_source, status,
-			reimbursement_status
+			reimbursement_status, store_id
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		in.Description,
 		in.Amount,
@@ -118,6 +118,7 @@ func createExpense(w http.ResponseWriter, r *http.Request) {
 		in.PaymentSource,
 		status,
 		reimbursement,
+		u.StoreID,
 	)
 	if err != nil {
 		http.Error(w, "Could not save expense", http.StatusInternalServerError)
@@ -152,14 +153,14 @@ func listExpenses(w http.ResponseWriter, r *http.Request) {
 			submitted_by_name, payment_source, status,
 			COALESCE(reviewed_by, 0), COALESCE(reviewed_at, ''),
 			review_note, reimbursement_status, COALESCE(reimbursed_at, '')
-		FROM expenses
+		FROM expenses WHERE store_id = ?
 	`
 
-	args := []any{}
+	args := []any{u.StoreID}
 
 	// Representatives can only see their own submissions.
 	if u.Role != "admin" {
-		query += ` WHERE submitted_by = ?`
+		query += ` AND submitted_by = ?`
 		args = append(args, u.ID)
 	}
 
@@ -248,8 +249,8 @@ func reviewExpense(w http.ResponseWriter, r *http.Request) {
 		UPDATE expenses
 		SET status = ?, reviewed_by = ?, reviewed_at = datetime('now'),
 			review_note = ?
-		WHERE id = ? AND status = 'pending'
-	`, in.Status, u.ID, strings.TrimSpace(in.Note), id)
+		WHERE id = ? AND store_id = ? AND status = 'pending'
+	`, in.Status, u.ID, strings.TrimSpace(in.Note), id, u.StoreID)
 	if err != nil {
 		http.Error(w, "Could not review expense", http.StatusInternalServerError)
 		return
@@ -265,6 +266,7 @@ func reviewExpense(w http.ResponseWriter, r *http.Request) {
 }
 
 func reimburseExpense(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		http.Error(w, "Invalid expense ID", http.StatusBadRequest)
@@ -275,11 +277,11 @@ func reimburseExpense(w http.ResponseWriter, r *http.Request) {
 		UPDATE expenses
 		SET reimbursement_status = 'paid',
 			reimbursed_at = datetime('now')
-		WHERE id = ?
+		WHERE id = ? AND store_id = ?
 			AND status = 'approved'
 			AND payment_source = 'personal'
 			AND reimbursement_status = 'unpaid'
-	`, id)
+	`, id, u.StoreID)
 	if err != nil {
 		http.Error(w, "Could not update reimbursement", http.StatusInternalServerError)
 		return
