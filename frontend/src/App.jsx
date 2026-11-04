@@ -98,12 +98,12 @@ export default function App({ user, onLogout, onStoreNameChange }) {
               </button>
             ))}
           </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', color: '#fff', fontSize: 14 }}>
+          <div className="account-actions">
             <span>{user.username} ({isAdmin ? 'Manager' : 'Sales rep'})</span>
-            <button className="theme-btn" style={{ margin: 0 }} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+            <button className="theme-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? '☀ Light' : '🌙 Dark'}
             </button>
-            <button className="theme-btn" style={{ margin: 0 }} onClick={onLogout}>Log out</button>
+            <button className="theme-btn" onClick={onLogout}>Log out</button>
           </div>
         </div>
       </div>

@@ -1,10 +1,20 @@
 /* ===== ShopManager layout fix (loads after App.css) ===== */
 
 table {
-  display: block;
-  overflow-x: auto;
-  max-width: 100%;
+  display: table;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-wrap table {
+  max-width: none;
 }
 
 th,
@@ -51,4 +61,135 @@ h4 {
 
 p {
   line-height: 1.6;
+}
+
+.account-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-size: 14px;
+}
+
+.account-actions .theme-btn {
+  margin-left: 0;
+}
+
+.login-shell {
+  max-width: 420px;
+  margin: clamp(24px, 10vh, 80px) auto;
+  padding: 16px;
+}
+
+.card,
+.stat,
+.grid-2 > *,
+.pos > * {
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .topbar-inner {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .brand {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .tabs {
+    grid-row: 3;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    margin: 0 -12px;
+    padding: 0 12px 2px;
+  }
+
+  .tab {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+
+  .account-actions {
+    grid-row: 2;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .page {
+    padding: 14px 12px;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: 12px;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .stat {
+    padding: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .stat strong {
+    font-size: clamp(16px, 5vw, 21px);
+  }
+
+  .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  input,
+  select,
+  button {
+    min-height: 44px;
+  }
+
+  .actions {
+    flex-wrap: wrap;
+  }
+
+  .actions button {
+    flex: 1 1 auto;
+  }
+
+  th,
+  td {
+    padding: 10px;
+  }
+
+  .toast {
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: calc(100% - 24px);
+    text-align: center;
+  }
+}
+
+@media (max-width: 380px) {
+  .account-actions {
+    gap: 6px;
+  }
+
+  .account-actions span {
+    flex-basis: 100%;
+  }
+
+  .page {
+    padding-inline: 8px;
+  }
+
+  .card {
+    padding: 12px;
+  }
 }

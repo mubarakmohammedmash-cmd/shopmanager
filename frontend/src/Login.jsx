@@ -43,7 +43,7 @@ export default function Login({ onLogin }) {
   }
 
   return (
-    <div style={{ maxWidth: 380, margin: '10vh auto', padding: 20 }}>
+    <div className="login-shell">
       <div className="card">
         <h2 style={{ fontSize: 22 }}>ShopManager</h2>
         {setupNeeded === null && !error && <div className="empty">Loading...</div>}
