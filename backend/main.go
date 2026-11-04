@@ -66,6 +66,7 @@ func main() {
 	// Existing database migrations.
 	migrate()
 	migrateAuth()
+	migratePayments()
 	migrateExpenses()
 
 	// Register API routes.
@@ -86,6 +87,9 @@ func main() {
 	mux.HandleFunc("POST /sales", createSaleV3)
 	mux.HandleFunc("GET /sales/recent", recentSales2)
 	mux.HandleFunc("GET /sales/history", salesHistoryV2)
+	mux.HandleFunc("GET /sales/outstanding", outstandingSales)
+	mux.HandleFunc("GET /sales/{id}/payments", salePayments)
+	mux.HandleFunc("POST /sales/{id}/payments", recordSalePayment)
 
 	mux.HandleFunc("GET /expenses", listExpenses)
 	mux.HandleFunc("POST /expenses", createExpense)

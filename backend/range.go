@@ -59,11 +59,12 @@ func topInRange(storeID int64, from, to string) ([]TopProduct, error) {
 }
 
 func paymentsInRange(storeID int64, from, to string) ([]PaymentTotal, error) {
-	rows, err := db.Query(`SELECT s.payment_method, SUM(s.amount_received)
-		FROM sales s
+	rows, err := db.Query(`SELECT p.payment_method, SUM(p.amount)
+		FROM sale_payments p
+		JOIN sales s ON s.id = p.sale_id
 		WHERE s.status = 'completed' AND s.store_id = ?
-		AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
-		GROUP BY s.payment_method ORDER BY SUM(s.amount_received) DESC`, storeID, from, to)
+		AND date(p.created_at, '+1 hour') BETWEEN ? AND ?
+		GROUP BY p.payment_method ORDER BY SUM(p.amount) DESC`, storeID, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -155,13 +156,14 @@ func rangeReport(w http.ResponseWriter, r *http.Request) {
 
 	var cashReceived, transferReceived, posReceived, changePaid int64
 	err = db.QueryRow(`SELECT
-		COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount_received ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN payment_method = 'transfer' THEN amount_received ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN payment_method = 'pos' THEN amount_received ELSE 0 END), 0),
-		COALESCE(SUM(change_given), 0)
-		FROM sales
-		WHERE status = 'completed' AND date(created_at, '+1 hour') BETWEEN ? AND ?
-		AND store_id = ?`,
+		COALESCE(SUM(CASE WHEN p.payment_method = 'cash' THEN p.amount ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN p.payment_method = 'transfer' THEN p.amount ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN p.payment_method = 'pos' THEN p.amount ELSE 0 END), 0),
+		COALESCE(SUM(p.change_given), 0)
+		FROM sale_payments p
+		JOIN sales s ON s.id = p.sale_id
+		WHERE s.status = 'completed' AND date(p.created_at, '+1 hour') BETWEEN ? AND ?
+		AND s.store_id = ?`,
 		from, to, storeID).Scan(&cashReceived, &transferReceived, &posReceived, &changePaid)
 	if err != nil {
 		http.Error(w, err.Error(), 500)

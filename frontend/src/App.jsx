@@ -32,6 +32,7 @@ export default function App({ user, onLogout, onStoreNameChange }) {
   const [report, setReport] = useState(null)
   const [expenses, setExpenses] = useState([])
   const [recent, setRecent] = useState([])
+  const [outstanding, setOutstanding] = useState([])
   const [message, setMessage] = useState(null)
   const [theme, setTheme] = useState(
     () =>
@@ -52,16 +53,18 @@ export default function App({ user, onLogout, onStoreNameChange }) {
   async function load() {
     try {
       if (isAdmin) {
-        const [p, r, e, s] = await Promise.all([
+        const [p, r, e, s, o] = await Promise.all([
           api('/products'),
           api('/reports/today'),
           api('/expenses'),
           api('/sales/recent'),
+          api('/sales/outstanding'),
         ])
         setProducts(p)
         setReport(r)
         setExpenses(e)
         setRecent(s)
+        setOutstanding(o)
       } else {
         const [p, e] = await Promise.all([
           api('/products'),
@@ -109,8 +112,8 @@ export default function App({ user, onLogout, onStoreNameChange }) {
       </div>
 
       <div className="page">
-        {tab === 'dashboard' && isAdmin && <Dashboard report={report} recent={recent} />}
-        {tab === 'rep-dashboard' && !isAdmin && <RepDashboard />}
+        {tab === 'dashboard' && isAdmin && <Dashboard report={report} recent={recent} outstanding={outstanding} onOpenHistory={() => setTab('history')} />}
+        {tab === 'rep-dashboard' && !isAdmin && <RepDashboard onOpenHistory={() => setTab('history')} />}
         {tab === 'sale' && <SaleScreen products={products} reload={load} notify={notify} isAdmin={isAdmin} />}
         {tab === 'history' && <HistoryScreen notify={notify} reload={load} isAdmin={isAdmin} />}
         {tab === 'reports' && isAdmin && <ReportsScreen />}
@@ -137,9 +140,10 @@ function Stat({ label, value, tone }) {
 }
 
 
-function RepDashboard() {
+function RepDashboard({ onOpenHistory }) {
   const [summary, setSummary] = useState(null)
   const [error, setError] = useState('')
+  const [outstanding, setOutstanding] = useState([])
 
   useEffect(() => {
     let alive = true
@@ -149,6 +153,13 @@ function RepDashboard() {
       })
       .catch(err => {
         if (alive) setError(err.message || 'Could not load your sales summary')
+      })
+    api('/sales/outstanding')
+      .then(data => {
+        if (alive) setOutstanding(data)
+      })
+      .catch(err => {
+        if (alive) setError(err.message || 'Could not load outstanding balances')
       })
     return () => { alive = false }
   }, [])
@@ -183,11 +194,12 @@ function RepDashboard() {
           tone={summary.cash_drawer_net < 0 ? 'bad' : 'good'}
         />
       </div>
+      <OutstandingList sales={outstanding} onOpenHistory={onOpenHistory} />
     </>
   )
 }
 
-function Dashboard({ report, recent }) {
+function Dashboard({ report, recent, outstanding, onOpenHistory }) {
   if (!report) return <div className="card">Loading...</div>
   return (
     <>
@@ -202,6 +214,8 @@ function Dashboard({ report, recent }) {
         />
         <Stat label="Transactions" value={report.sales_count} />
       </div>
+
+      <OutstandingList sales={outstanding} onOpenHistory={onOpenHistory} />
 
       <div className="grid-2">
         <div className="card">
@@ -254,6 +268,35 @@ function Dashboard({ report, recent }) {
         )}
       </div>
     </>
+  )
+}
+
+function OutstandingList({ sales, onOpenHistory }) {
+  const totalOwed = sales.reduce((sum, sale) => sum + sale.balance, 0)
+
+  return (
+    <div className="card">
+      <h2>Outstanding balances</h2>
+      {sales.length === 0 ? (
+        <div className="empty">No unpaid sales.</div>
+      ) : (
+        <>
+          <div className="cart-line">
+            <span>{sales.length} unpaid sale{sales.length === 1 ? '' : 's'}</span>
+            <strong className="low">{naira(totalOwed)} owed</strong>
+          </div>
+          {sales.slice(0, 5).map((sale) => (
+            <div className="cart-line" key={sale.id}>
+              <span>{sale.customer_name} · #{sale.id}</span>
+              <strong className="low">{naira(sale.balance)}</strong>
+            </div>
+          ))}
+          <button className="ghost" style={{ width: '100%', marginTop: 12 }} onClick={onOpenHistory}>
+            Manage payments in History
+          </button>
+        </>
+      )}
+    </div>
   )
 }
 

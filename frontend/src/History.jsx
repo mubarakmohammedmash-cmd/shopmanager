@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, naira, when } from './api.js'
+import { api, naira, toKobo, when } from './api.js'
 
 const paymentLabels = {
   cash: 'Cash',
   transfer: 'Transfer',
   pos: 'POS',
+}
+
+function paymentMethodLabel(methods) {
+  return String(methods || '')
+    .split(',')
+    .filter(Boolean)
+    .map((method) => paymentLabels[method] || method)
+    .join(', ') || '-'
 }
 
 function localDate(date = new Date()) {
@@ -18,11 +26,14 @@ function downloadHistoryCSV(sales) {
   const columns = [
     'Receipt',
     'Date',
+    'Customer',
     'Items',
     'Payment method',
     'Status',
     'Sold by',
     'Total',
+    'Paid',
+    'Balance',
     'Profit',
     'Voided by',
   ]
@@ -41,11 +52,14 @@ function downloadHistoryCSV(sales) {
   const rows = sales.map((sale) => [
     sale.id,
     sale.created_at,
+    sale.customer_name,
     sale.items,
-    paymentLabels[sale.payment_method] || sale.payment_method,
+    paymentMethodLabel(sale.payment_method),
     sale.status,
     sale.sold_by,
     sale.total,
+    sale.paid,
+    sale.balance,
     sale.profit ?? '',
     sale.voided_by || '',
   ])
@@ -77,14 +91,70 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [selectedSale, setSelectedSale] = useState(null)
+  const [payments, setPayments] = useState([])
+  const [paymentAmount, setPaymentAmount] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [savingPayment, setSavingPayment] = useState(false)
 
   async function loadHistory() {
     try {
       const result = await api('/sales/history')
-      setSales(Array.isArray(result) ? result : [])
+      const rows = Array.isArray(result) ? result : []
+      setSales(rows)
+      return rows
     } catch (error) {
       setSales([])
       notify(error.message || 'Could not load transaction history', 'error')
+      return []
+    }
+  }
+
+  async function openSale(sale) {
+    setSelectedSale(sale)
+    setPayments([])
+    setPaymentAmount('')
+    try {
+      const rows = await api(`/sales/${sale.id}/payments`)
+      setPayments(Array.isArray(rows) ? rows : [])
+    } catch (error) {
+      notify(error.message || 'Could not load payment history', 'error')
+    }
+  }
+
+  async function recordPayment(event) {
+    event.preventDefault()
+    const amount = toKobo(paymentAmount)
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      notify('Enter a valid payment amount', 'error')
+      return
+    }
+    setSavingPayment(true)
+    let recorded = false
+    try {
+      await api(`/sales/${selectedSale.id}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount, payment_method: paymentMethod }),
+      })
+      recorded = true
+      notify('Payment recorded')
+      setPaymentAmount('')
+      const [rows, paymentRows] = await Promise.all([
+        loadHistory(),
+        api(`/sales/${selectedSale.id}/payments`),
+      ])
+      setSelectedSale(rows.find((sale) => sale.id === selectedSale.id) || null)
+      setPayments(Array.isArray(paymentRows) ? paymentRows : [])
+      reload()
+    } catch (error) {
+      notify(
+        recorded
+          ? `Payment recorded, but the updated payment history could not be loaded: ${error.message}`
+          : error.message || 'Could not record payment',
+        'error',
+      )
+    } finally {
+      setSavingPayment(false)
     }
   }
 
@@ -102,6 +172,7 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
         !term ||
         String(sale.id).includes(term) ||
         String(sale.items || '').toLowerCase().includes(term) ||
+        String(sale.customer_name || '').toLowerCase().includes(term) ||
         String(sale.sold_by || '').toLowerCase().includes(term) ||
         String(sale.voided_by || '').toLowerCase().includes(term)
 
@@ -111,10 +182,13 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
       const matchesTo = !to || saleDate <= to
 
       const matchesPayment =
-        payment === 'all' || sale.payment_method === payment
+        payment === 'all' || String(sale.payment_method || '').split(',').includes(payment)
 
       const matchesStatus =
-        status === 'all' || sale.status === status
+        status === 'all' ||
+        (status === 'outstanding'
+          ? sale.status === 'completed' && sale.balance > 0
+          : sale.status === status)
 
       return (
         matchesSearch &&
@@ -239,6 +313,7 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
               onChange={(event) => setStatus(event.target.value)}
             >
               <option value="all">All statuses</option>
+              <option value="outstanding">Outstanding balance</option>
               <option value="completed">Completed</option>
               <option value="voided">Voided</option>
             </select>
@@ -275,12 +350,16 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
                 <tr>
                   <th>Receipt</th>
                   <th>Time</th>
+                  <th>Customer</th>
                   <th>Items sold</th>
-                  <th>Payment</th>
+                  <th>Payment methods</th>
                   {isAdmin && <th>Sold by</th>}
                   <th>Total</th>
+                  <th>Paid</th>
+                  <th>Balance</th>
                   {isAdmin && <th>Profit</th>}
-                  <th>Status</th>
+                  <th>Payment status</th>
+                  <th>Sale status</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -296,16 +375,19 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
                     >
                       <td>#{sale.id}</td>
                       <td>{when(sale.created_at)}</td>
+                      <td>{sale.customer_name || '-'}</td>
                       <td>{sale.items || '-'}</td>
                       <td>
-                        {paymentLabels[sale.payment_method] ||
-                          sale.payment_method ||
-                          '-'}
+                        {paymentMethodLabel(sale.payment_method)}
                       </td>
 
                       {isAdmin && <td>{sale.sold_by || '-'}</td>}
 
                       <td>{naira(sale.total)}</td>
+                      <td>{naira(sale.paid)}</td>
+                      <td className={sale.status === 'voided' ? 'muted' : sale.balance > 0 ? 'low' : 'ok'}>
+                        {sale.status === 'voided' ? '-' : sale.balance > 0 ? naira(sale.balance) : 'Paid'}
+                      </td>
 
                       {isAdmin && (
                         <td className={voided ? '' : 'ok'}>
@@ -314,6 +396,16 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
                             : naira(sale.profit)}
                         </td>
                       )}
+
+                      <td>
+                        {voided ? (
+                          <span className="muted">-</span>
+                        ) : sale.balance > 0 ? (
+                          <span className="low">Balance due</span>
+                        ) : (
+                          <span className="ok">Paid</span>
+                        )}
+                      </td>
 
                       <td>
                         {voided ? (
@@ -327,7 +419,7 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
                         <div className="form-grid">
                           <button
                             className="ghost"
-                            onClick={() => setSelectedSale(sale)}
+                            onClick={() => openSale(sale)}
                           >
                             Details
                           </button>
@@ -365,13 +457,16 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
             <strong>{selectedSale.items || '-'}</strong>
           </div>
 
+          {selectedSale.customer_name && (
+            <div className="cart-line">
+              <span>Customer</span>
+              <strong>{selectedSale.customer_name}</strong>
+            </div>
+          )}
+
           <div className="cart-line">
-            <span>Payment method</span>
-            <strong>
-              {paymentLabels[selectedSale.payment_method] ||
-                selectedSale.payment_method ||
-                '-'}
-            </strong>
+            <span>Payment methods</span>
+            <strong>{paymentMethodLabel(selectedSale.payment_method)}</strong>
           </div>
 
           <div className="cart-line">
@@ -383,6 +478,65 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
             <span>Total</span>
             <strong>{naira(selectedSale.total)}</strong>
           </div>
+
+          <div className="cart-line">
+            <span>Paid so far</span>
+            <strong>{naira(selectedSale.paid)}</strong>
+          </div>
+
+          <div className="cart-line">
+            <span>Balance</span>
+            <strong className={selectedSale.balance > 0 ? 'low' : 'ok'}>
+              {selectedSale.status === 'voided' ? 'Cancelled' : naira(selectedSale.balance)}
+            </strong>
+          </div>
+
+          <h3>Payment history</h3>
+          {payments.length === 0 && <div className="empty">No payments recorded.</div>}
+          {payments.map((item) => (
+            <div className="cart-line" key={item.id}>
+              <span>
+                {paymentLabels[item.payment_method] || item.payment_method}
+                {' · '}{when(item.created_at)}
+                {item.recorded_by && ` · ${item.recorded_by}`}
+              </span>
+              <strong>
+                {naira(item.amount)}
+                {item.change_given > 0 && ` (change ${naira(item.change_given)})`}
+              </strong>
+            </div>
+          ))}
+
+          {selectedSale.status === 'completed' && selectedSale.balance > 0 && (
+            <form className="form-grid payment-form" onSubmit={recordPayment}>
+              <label className="field">
+                <span>Payment received (₦)</span>
+                <input
+                  required
+                  type="number"
+                  min="0.01"
+                  max={(selectedSale.balance / 100).toFixed(2)}
+                  step="0.01"
+                  value={paymentAmount}
+                  onChange={(event) => setPaymentAmount(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Payment method</span>
+                <select
+                  value={paymentMethod}
+                  onChange={(event) => setPaymentMethod(event.target.value)}
+                >
+                  {Object.entries(paymentLabels).map(([key, label]) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="submit" disabled={savingPayment}>
+                {savingPayment ? 'Saving...' : 'Record payment'}
+              </button>
+            </form>
+          )}
 
           {isAdmin && (
             <>

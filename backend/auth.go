@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -674,6 +675,11 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "payment must be cash, transfer or pos", 400)
 		return
 	}
+	req.CustomerName = strings.TrimSpace(req.CustomerName)
+	if len(req.CustomerName) > 120 {
+		http.Error(w, "customer name must be 120 characters or fewer", 400)
+		return
+	}
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -744,25 +750,43 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 		total += price * int64(it.Qty)
 	}
 
-	received := req.AmountReceived
-	// Older clients that omit this field are treated as exact payment.
-	if received == 0 {
-		received = total
+	received := total
+	if req.AmountReceived != nil {
+		received = *req.AmountReceived
+		// Preserve legacy zero-as-default clients unless this is a named credit sale.
+		if received == 0 && req.CustomerName == "" {
+			received = total
+		}
 	}
-	if received < total {
-		http.Error(w, "amount received is less than the sale total", 400)
+	if received < 0 {
+		http.Error(w, "amount received cannot be negative", 400)
+		return
+	}
+	if received < total && req.CustomerName == "" {
+		http.Error(w, "customer name is required when the sale is not paid in full", 400)
 		return
 	}
 	change := received - total
+	if change < 0 {
+		change = 0
+	}
 
 	if _, err := tx.Exec(
 		`UPDATE sales
-		 SET total = ?, payment_method = ?, amount_received = ?, change_given = ?
+		 SET total = ?, payment_method = ?, amount_received = ?, change_given = ?, customer_name = ?
 		 WHERE id = ? AND store_id = ?`,
-		total, method, received, change, saleID, u.StoreID,
+		total, method, received, change, req.CustomerName, saleID, u.StoreID,
 	); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
+	}
+	if received > 0 {
+		if _, err := tx.Exec(`INSERT INTO sale_payments
+			(sale_id, amount, change_given, payment_method, recorded_by)
+			VALUES (?, ?, ?, ?, ?)`, saleID, received, change, method, u.ID); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -774,7 +798,207 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 		"total":           total,
 		"amount_received": received,
 		"change_given":    change,
+		"balance":         total - received + change,
 	})
+}
+
+type SalePayment struct {
+	ID            int64  `json:"id"`
+	Amount        int64  `json:"amount"`
+	ChangeGiven   int64  `json:"change_given"`
+	PaymentMethod string `json:"payment_method"`
+	CreatedAt     string `json:"created_at"`
+	RecordedBy    string `json:"recorded_by"`
+}
+
+type OutstandingSale struct {
+	ID        int64  `json:"id"`
+	CreatedAt string `json:"created_at"`
+	Customer  string `json:"customer_name"`
+	Total     int64  `json:"total"`
+	Paid      int64  `json:"paid"`
+	Balance   int64  `json:"balance"`
+	SoldBy    string `json:"sold_by"`
+}
+
+var errSaleForbidden = errors.New("you can only access your own sales")
+
+func saleAccess(r *http.Request, tx *sql.Tx, id int64) error {
+	u := currentUser(r)
+	var owner sql.NullInt64
+	err := tx.QueryRow(`SELECT user_id FROM sales WHERE id = ? AND store_id = ?`,
+		id, u.StoreID).Scan(&owner)
+	if err != nil {
+		return err
+	}
+	if u.Role != "admin" && (!owner.Valid || owner.Int64 != u.ID) {
+		return errSaleForbidden
+	}
+	return nil
+}
+
+func saleAccessError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		http.Error(w, "sale not found", 404)
+	case errors.Is(err, errSaleForbidden):
+		http.Error(w, err.Error(), 403)
+	default:
+		http.Error(w, err.Error(), 500)
+	}
+}
+
+func salePayments(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad sale id", 400)
+		return
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer tx.Rollback()
+	if err := saleAccess(r, tx, id); err != nil {
+		saleAccessError(w, err)
+		return
+	}
+	rows, err := tx.Query(`SELECT p.id, p.amount, p.change_given, p.payment_method,
+			p.created_at, COALESCE(u.username, '')
+		FROM sale_payments p LEFT JOIN users u ON u.id = p.recorded_by
+		WHERE p.sale_id = ? ORDER BY p.id`, id)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+	out := []SalePayment{}
+	for rows.Next() {
+		var p SalePayment
+		if err := rows.Scan(&p.ID, &p.Amount, &p.ChangeGiven, &p.PaymentMethod,
+			&p.CreatedAt, &p.RecordedBy); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, out)
+}
+
+func recordSalePayment(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad sale id", 400)
+		return
+	}
+	var req struct {
+		Amount        int64  `json:"amount"`
+		PaymentMethod string `json:"payment_method"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	if req.Amount <= 0 {
+		http.Error(w, "payment amount must be greater than zero", 400)
+		return
+	}
+	if !validPayment[req.PaymentMethod] {
+		http.Error(w, "payment must be cash, transfer or pos", 400)
+		return
+	}
+
+	u := currentUser(r)
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer tx.Rollback()
+	if err := saleAccess(r, tx, id); err != nil {
+		saleAccessError(w, err)
+		return
+	}
+
+	var status string
+	var total, received, change int64
+	if err := tx.QueryRow(`SELECT status, total, amount_received, change_given
+		FROM sales WHERE id = ? AND store_id = ?`, id, u.StoreID).
+		Scan(&status, &total, &received, &change); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if status != "completed" {
+		http.Error(w, "payments can only be recorded for completed sales", 409)
+		return
+	}
+	balance := total - (received - change)
+	if req.Amount > balance {
+		http.Error(w, "payment cannot exceed the outstanding balance", 400)
+		return
+	}
+	if _, err := tx.Exec(`INSERT INTO sale_payments
+		(sale_id, amount, payment_method, recorded_by) VALUES (?, ?, ?, ?)`,
+		id, req.Amount, req.PaymentMethod, u.ID); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if _, err := tx.Exec(`UPDATE sales SET amount_received = amount_received + ?
+		WHERE id = ? AND store_id = ?`, req.Amount, id, u.StoreID); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, map[string]int64{
+		"paid":    received - change + req.Amount,
+		"balance": balance - req.Amount,
+	})
+}
+
+func outstandingSales(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	q := `SELECT s.id, s.created_at, s.customer_name, s.total,
+			s.amount_received - s.change_given,
+			s.total - (s.amount_received - s.change_given),
+			COALESCE(u.username, '')
+		FROM sales s LEFT JOIN users u ON u.id = s.user_id
+		WHERE s.store_id = ? AND s.status = 'completed'
+			AND s.total > (s.amount_received - s.change_given)`
+	args := []any{u.StoreID}
+	if u.Role != "admin" {
+		q += ` AND s.user_id = ?`
+		args = append(args, u.ID)
+	}
+	q += ` ORDER BY s.created_at DESC, s.id DESC`
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+	out := []OutstandingSale{}
+	for rows.Next() {
+		var s OutstandingSale
+		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.Customer, &s.Total,
+			&s.Paid, &s.Balance, &s.SoldBy); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, out)
 }
 
 // Reps can void only their own sales. The manager can void any sale. Who voided is recorded.
@@ -855,6 +1079,9 @@ type HistoryRow struct {
 	ID            int64  `json:"id"`
 	CreatedAt     string `json:"created_at"`
 	Total         int64  `json:"total"`
+	CustomerName  string `json:"customer_name"`
+	Paid          int64  `json:"paid"`
+	Balance       int64  `json:"balance"`
 	Profit        *int64 `json:"profit,omitempty"`
 	Items         string `json:"items"`
 	PaymentMethod string `json:"payment_method"`
@@ -891,17 +1118,18 @@ func mySalesSummary(w http.ResponseWriter, r *http.Request) {
 
 	err = db.QueryRow(`
         SELECT
-            COALESCE(SUM(CASE WHEN payment_method = 'cash'
-                THEN amount_received ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN payment_method = 'transfer'
-                THEN amount_received ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN payment_method = 'pos'
-                THEN amount_received ELSE 0 END), 0),
-            COALESCE(SUM(change_given), 0)
-        FROM sales
-        WHERE user_id = ? AND store_id = ?
-          AND status = 'completed'
-          AND date(created_at, '+1 hour') = date('now', '+1 hour')
+            COALESCE(SUM(CASE WHEN p.payment_method = 'cash'
+                THEN p.amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN p.payment_method = 'transfer'
+                THEN p.amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN p.payment_method = 'pos'
+                THEN p.amount ELSE 0 END), 0),
+            COALESCE(SUM(p.change_given), 0)
+        FROM sale_payments p
+        JOIN sales s ON s.id = p.sale_id
+        WHERE s.user_id = ? AND s.store_id = ?
+          AND s.status = 'completed'
+          AND date(p.created_at, '+1 hour') = date('now', '+1 hour')
     `, u.ID, u.StoreID).Scan(
 		&cashReceived, &transferReceived, &posReceived, &changePaid,
 	)
@@ -927,8 +1155,15 @@ func salesHistoryV2(w http.ResponseWriter, r *http.Request) {
 	q := `SELECT s.id, s.created_at, s.total,
 			SUM(si.qty * (si.unit_price - si.unit_cost)),
 			GROUP_CONCAT(p.name || ' x' || si.qty, ', '),
-			s.payment_method, s.status,
-			COALESCE(su.username, ''), COALESCE(vu.username, '')
+			COALESCE((SELECT GROUP_CONCAT(DISTINCT sp.payment_method)
+				FROM sale_payments sp WHERE sp.sale_id = s.id), ''),
+			s.status,
+			COALESCE(su.username, ''), COALESCE(vu.username, ''),
+			COALESCE(s.customer_name, ''),
+			s.amount_received - s.change_given,
+			CASE WHEN s.status = 'completed'
+				THEN MAX(0, s.total - (s.amount_received - s.change_given))
+				ELSE 0 END
 		FROM sales s
 		JOIN sale_items si ON si.sale_id = s.id
 		JOIN products p ON p.id = si.product_id
@@ -953,7 +1188,8 @@ func salesHistoryV2(w http.ResponseWriter, r *http.Request) {
 		var h HistoryRow
 		var profit int64
 		if err := rows.Scan(&h.ID, &h.CreatedAt, &h.Total, &profit, &h.Items,
-			&h.PaymentMethod, &h.Status, &h.SoldBy, &h.VoidedBy); err != nil {
+			&h.PaymentMethod, &h.Status, &h.SoldBy, &h.VoidedBy,
+			&h.CustomerName, &h.Paid, &h.Balance); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}

@@ -57,10 +57,40 @@ type saleItemReq2 struct {
 type saleReq2 struct {
 	Items          []saleItemReq2 `json:"items"`
 	PaymentMethod  string         `json:"payment_method"`
-	AmountReceived int64          `json:"amount_received"`
+	AmountReceived *int64         `json:"amount_received"`
+	CustomerName   string         `json:"customer_name"`
 }
 
 var validPayment = map[string]bool{"cash": true, "transfer": true, "pos": true}
+
+func migratePayments() {
+	if !hasColumn("sales", "customer_name") {
+		if _, err := db.Exec(`ALTER TABLE sales ADD COLUMN customer_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS sale_payments (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		sale_id INTEGER NOT NULL REFERENCES sales(id),
+		amount INTEGER NOT NULL CHECK (amount > 0),
+		change_given INTEGER NOT NULL DEFAULT 0 CHECK (change_given >= 0),
+		payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'transfer', 'pos')),
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		recorded_by INTEGER REFERENCES users(id)
+	);
+	CREATE INDEX IF NOT EXISTS sale_payments_sale_idx ON sale_payments(sale_id);
+	CREATE INDEX IF NOT EXISTS sale_payments_created_idx ON sale_payments(created_at)`); err != nil {
+		log.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO sale_payments
+		(sale_id, amount, change_given, payment_method, created_at, recorded_by)
+		SELECT s.id, s.amount_received, s.change_given, s.payment_method, s.created_at, s.user_id
+		FROM sales s
+		WHERE s.amount_received > 0
+			AND NOT EXISTS (SELECT 1 FROM sale_payments p WHERE p.sale_id = s.id)`); err != nil {
+		log.Fatal(err)
+	}
+}
 
 func createSaleV2(w http.ResponseWriter, r *http.Request) {
 	var req saleReq2

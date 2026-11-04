@@ -20,6 +20,7 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
   const [cart, setCart] = useState([])
   const [payment, setPayment] = useState('cash')
   const [received, setReceived] = useState('')
+  const [customerName, setCustomerName] = useState('')
 
   const parsed = parseEntry(entry)
   const shown = products.filter((p) => p.name.toLowerCase().includes(parsed.name.toLowerCase()))
@@ -150,17 +151,36 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
   }
 
   function change(id, delta) {
-    setCart(
-      cart.flatMap((c) => {
-        if (c.id !== id) return [c]
-        const qty = c.qty + delta
-        if (qty > c.stock) return [c]
-        return qty > 0 ? [{ ...c, qty }] : []
-      }),
-    )
+    const updatedCart = cart.flatMap((c) => {
+      if (c.id !== id) return [c]
+      const qty = c.qty + delta
+      if (qty > c.stock) return [c]
+      return qty > 0 ? [{ ...c, qty }] : []
+    })
+    setCart(updatedCart)
+    if (updatedCart.length === 0) {
+      setPayment('cash')
+      setReceived('')
+      setCustomerName('')
+    }
+  }
+
+  function clearSale() {
+    setCart([])
+    setPayment('cash')
+    setReceived('')
+    setCustomerName('')
   }
 
   async function complete() {
+    if (!Number.isSafeInteger(amountReceived) || amountReceived < 0) {
+      notify('Enter a valid amount received', 'error')
+      return
+    }
+    if (shortBy > 0 && !customerName.trim()) {
+      notify('Enter the customer name to record an unpaid balance', 'error')
+      return
+    }
     for (const c of cart) {
       if (c.price === '' || Number.isNaN(Number(c.price)) || Number(c.price) < 0) {
         notify(`Enter a valid price for ${c.name}`, 'error')
@@ -173,6 +193,7 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
         body: JSON.stringify({
           payment_method: payment,
           amount_received: amountReceived,
+          customer_name: customerName.trim(),
           items: cart.map((c) => ({
             product_id: c.id,
             qty: c.qty,
@@ -183,9 +204,10 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
       setCart([])
       setPayment('cash')
       setReceived('')
-      notify(
-        `Sale complete: ${naira(r.total)}. Change given: ${naira(r.change_given || 0)}`,
-      )
+      setCustomerName('')
+      notify(r.balance > 0
+        ? `Sale recorded for ${customerName.trim()}: ${naira(r.balance)} still owed`
+        : `Sale complete: ${naira(r.total)}. Change given: ${naira(r.change_given || 0)}`)
       reload()
     } catch (e) {
       notify(e.message, 'error')
@@ -278,7 +300,7 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
               <span>{naira(total)}</span>
             </div>
             <label className="field" style={{ marginTop: 12 }}>
-              <span>Amount received (₦)</span>
+              <span>Amount received now (₦)</span>
               <input
                 type="number"
                 min="0"
@@ -288,8 +310,20 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
                 onChange={(e) => setReceived(e.target.value)}
               />
             </label>
+            {shortBy > 0 && (
+              <label className="field" style={{ marginTop: 12 }}>
+                <span>Customer name (required for an unpaid balance)</span>
+                <input
+                  required
+                  maxLength="120"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  placeholder="Customer name"
+                />
+              </label>
+            )}
             <div className="cart-line">
-              <span>{shortBy > 0 ? 'Still owed' : 'Change to give'}</span>
+              <span>{shortBy > 0 ? 'Balance to collect later' : 'Change to give'}</span>
               <strong className={shortBy > 0 ? 'low' : 'ok'}>
                 {naira(shortBy > 0 ? shortBy : changeDue)}
               </strong>
@@ -300,10 +334,10 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
                 Any change due is a cash payout from the drawer.
               </div>
             )}
-            <button onClick={complete} disabled={shortBy > 0}>
-              {shortBy > 0 ? 'Amount received is insufficient' : 'Confirm sale'}
+            <button onClick={complete} disabled={shortBy > 0 && !customerName.trim()}>
+              {shortBy > 0 ? 'Record sale with balance' : 'Confirm sale'}
             </button>
-            <button className="ghost" style={{ width: '100%', marginTop: 8 }} onClick={() => setCart([])}>
+            <button className="ghost" style={{ width: '100%', marginTop: 8 }} onClick={clearSale}>
               Clear
             </button>
           </>
