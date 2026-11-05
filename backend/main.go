@@ -100,6 +100,7 @@ func main() {
 	mux.HandleFunc("POST /sales/{id}/void", voidSaleV2)
 	mux.HandleFunc("GET /reports/range", rangeReport)
 	mux.HandleFunc("GET /reports/export", exportCSV)
+	mux.HandleFunc("POST /assistant/chat", assistantChat)
 
 	registerAuthRoutes(mux)
 
