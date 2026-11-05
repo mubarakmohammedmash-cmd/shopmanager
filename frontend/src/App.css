@@ -39,6 +39,7 @@ button.danger { background: var(--red); }
 
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; }
 .field span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.voice-entry { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }

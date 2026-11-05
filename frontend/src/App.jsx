@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api, naira, toKobo, when } from './api.js'
 import SaleScreen from './Sale.jsx'
@@ -306,9 +306,87 @@ function Products({ products, reload, notify }) {
   const [search, setSearch] = useState('')
   const [editId, setEditId] = useState(null)
   const [draft, setDraft] = useState({})
+  const [voiceListening, setVoiceListening] = useState(false)
+  const [voiceTranscript, setVoiceTranscript] = useState('')
+  const recognitionRef = useRef(null)
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const shown = products.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
+
+  useEffect(() => () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null
+      recognitionRef.current.stop()
+    }
+  }, [])
+
+  function startVoiceEntry() {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      notify('Voice entry is not supported in this browser. Try Chrome or Edge.', 'error')
+      return
+    }
+
+    const recognition = new SpeechRecognition()
+    recognition.lang = 'en-NG'
+    recognition.interimResults = false
+    recognition.maxAlternatives = 1
+    recognitionRef.current = recognition
+    setVoiceTranscript('')
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript.trim()
+      const findNumber = (pattern) => {
+        const match = transcript.match(new RegExp(
+          `\\b(?:${pattern})\\s*(?:(?:is|of|at)\\s*)?(?:₦\\s*)?(\\d[\\d,]*(?:\\.\\d+)?)`,
+          'i',
+        ))
+        return match ? match[1].replace(/,/g, '') : ''
+      }
+
+      const firstField = transcript.search(
+        /\b(?:cost(?:\s+price)?|buying\s+price|selling\s+price|sell\s+price|price|stock|quantity|qty|alert|low\s+stock)\b/i,
+      )
+      const spokenName = (firstField === -1 ? transcript : transcript.slice(0, firstField))
+        .replace(/^\s*(?:product\s+name|name)\s*/i, '')
+        .replace(/[\s,:-]+$/, '')
+
+      setVoiceTranscript(transcript)
+      setForm((current) => ({
+        ...current,
+        name: spokenName || current.name,
+        cost: findNumber('cost(?:\\s+price)?|buying\\s+price') || current.cost,
+        price: findNumber('selling\\s+price|sell\\s+price') || current.price,
+        stock: findNumber('stock|quantity|qty') || current.stock,
+        low: findNumber('alert(?:\\s+at)?|low\\s+stock(?:\\s+level)?') || current.low,
+      }))
+      notify('Voice entry filled what it recognized. Review the fields before saving.')
+    }
+
+    recognition.onerror = (event) => {
+      const message = event.error === 'not-allowed'
+        ? 'Microphone access was denied. Allow microphone access and try again.'
+        : event.error === 'no-speech'
+          ? 'No speech was detected. Try again and speak clearly.'
+          : `Voice entry failed: ${event.error}`
+      notify(message, 'error')
+    }
+
+    recognition.onend = () => {
+      setVoiceListening(false)
+      recognitionRef.current = null
+    }
+
+    try {
+      setVoiceListening(true)
+      recognition.start()
+    } catch (error) {
+      setVoiceListening(false)
+      recognitionRef.current = null
+      notify(`Could not start voice entry: ${error.message}`, 'error')
+    }
+  }
 
   async function add(e) {
     e.preventDefault()
@@ -372,6 +450,24 @@ function Products({ products, reload, notify }) {
     <>
       <div className="card">
         <h2>Add product</h2>
+        <p className="muted">
+          Speak a product name, cost, selling price, stock, and optional alert level.
+          For example: “Product name Peak Milk, cost 200, selling price 300, stock 12, alert 5”.
+          Voice recognition is provided by your browser. Check the fields before saving.
+        </p>
+        <div className="voice-entry">
+          <button type="button" className="ghost" onClick={startVoiceEntry} disabled={voiceListening}>
+            {voiceListening ? 'Listening...' : 'Use voice'}
+          </button>
+          {voiceListening && (
+            <button type="button" className="ghost" onClick={() => recognitionRef.current?.stop()}>
+              Stop listening
+            </button>
+          )}
+        </div>
+        {voiceTranscript && (
+          <p className="muted" aria-live="polite">Heard: “{voiceTranscript}”</p>
+        )}
         <form className="form-grid" onSubmit={add}>
           <label className="field"><span>Name</span>
             <input required value={form.name} onChange={set('name')} placeholder="e.g. Peak Milk 400g" />
