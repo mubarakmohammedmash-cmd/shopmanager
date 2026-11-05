@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, naira, toKobo, when } from './api.js'
 
 const paymentLabels = {
@@ -95,6 +95,9 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
   const [paymentAmount, setPaymentAmount] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [savingPayment, setSavingPayment] = useState(false)
+  const [focusPaymentForm, setFocusPaymentForm] = useState(false)
+  const paymentFormRef = useRef(null)
+  const paymentAmountInputRef = useRef(null)
 
   async function loadHistory() {
     try {
@@ -109,8 +112,9 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
     }
   }
 
-  async function openSale(sale) {
+  async function openSale(sale, focusPayment = false) {
     setSelectedSale(sale)
+    setFocusPaymentForm(focusPayment)
     setPayments([])
     setPaymentAmount('')
     try {
@@ -120,6 +124,17 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
       notify(error.message || 'Could not load payment history', 'error')
     }
   }
+
+  useEffect(() => {
+    if (!focusPaymentForm || !selectedSale) return
+
+    paymentFormRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+    })
+    paymentAmountInputRef.current?.focus({ preventScroll: true })
+    setFocusPaymentForm(false)
+  }, [focusPaymentForm, selectedSale])
 
   async function recordPayment(event) {
     event.preventDefault()
@@ -344,8 +359,8 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
 
       {sales && filteredSales.length > 0 && (
         <div className="card">
-          <div className="table-wrap">
-            <table>
+          <div className="table-wrap history-table-wrap">
+            <table className="history-table">
               <thead>
                 <tr>
                   <th>Receipt</th>
@@ -373,31 +388,31 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
                       key={sale.id}
                       style={voided ? { opacity: 0.7 } : undefined}
                     >
-                      <td>#{sale.id}</td>
-                      <td>{when(sale.created_at)}</td>
-                      <td>{sale.customer_name || '-'}</td>
-                      <td>{sale.items || '-'}</td>
-                      <td>
+                      <td className="history-receipt" data-label="Receipt">#{sale.id}</td>
+                      <td data-label="Time">{when(sale.created_at)}</td>
+                      <td data-label="Customer">{sale.customer_name || '-'}</td>
+                      <td data-label="Items sold">{sale.items || '-'}</td>
+                      <td data-label="Payment methods">
                         {paymentMethodLabel(sale.payment_method)}
                       </td>
 
-                      {isAdmin && <td>{sale.sold_by || '-'}</td>}
+                      {isAdmin && <td data-label="Sold by">{sale.sold_by || '-'}</td>}
 
-                      <td>{naira(sale.total)}</td>
-                      <td>{naira(sale.paid)}</td>
-                      <td className={sale.status === 'voided' ? 'muted' : sale.balance > 0 ? 'low' : 'ok'}>
+                      <td data-label="Total">{naira(sale.total)}</td>
+                      <td data-label="Paid">{naira(sale.paid)}</td>
+                      <td data-label="Balance" className={sale.status === 'voided' ? 'muted' : sale.balance > 0 ? 'low' : 'ok'}>
                         {sale.status === 'voided' ? '-' : sale.balance > 0 ? naira(sale.balance) : 'Paid'}
                       </td>
 
                       {isAdmin && (
-                        <td className={voided ? '' : 'ok'}>
+                        <td data-label="Profit" className={voided ? '' : 'ok'}>
                           {voided || sale.profit == null
                             ? '-'
                             : naira(sale.profit)}
                         </td>
                       )}
 
-                      <td>
+                      <td data-label="Payment status">
                         {voided ? (
                           <span className="muted">-</span>
                         ) : sale.balance > 0 ? (
@@ -407,7 +422,7 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
                         )}
                       </td>
 
-                      <td>
+                      <td data-label="Sale status">
                         {voided ? (
                           <span className="low">Voided</span>
                         ) : (
@@ -415,14 +430,23 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
                         )}
                       </td>
 
-                      <td>
-                        <div className="form-grid">
+                      <td className="history-actions-cell" data-label="Actions">
+                        <div className="history-actions">
                           <button
                             className="ghost"
                             onClick={() => openSale(sale)}
                           >
                             Details
                           </button>
+
+                          {sale.status === 'completed' && sale.balance > 0 && (
+                            <button
+                              className="ghost"
+                              onClick={() => openSale(sale, true)}
+                            >
+                              Record payment
+                            </button>
+                          )}
 
                           {!voided && (
                             <button
@@ -508,10 +532,15 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
           ))}
 
           {selectedSale.status === 'completed' && selectedSale.balance > 0 && (
-            <form className="form-grid payment-form" onSubmit={recordPayment}>
+            <form
+              ref={paymentFormRef}
+              className="form-grid payment-form"
+              onSubmit={recordPayment}
+            >
               <label className="field">
                 <span>Payment received (₦)</span>
                 <input
+                  ref={paymentAmountInputRef}
                   required
                   type="number"
                   min="0.01"
