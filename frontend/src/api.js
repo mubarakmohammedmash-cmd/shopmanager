@@ -1,6 +1,7 @@
 export const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8080' : '/api')
 
 const KEY = 'shopmanager-auth'
+let sessionCheck = null
 
 export function getAuth() {
   try {
@@ -25,16 +26,44 @@ export function clearAuth() {
   sessionStorage.removeItem(KEY)
 }
 
+async function sessionIsInvalid(token) {
+  if (!sessionCheck) {
+    sessionCheck = fetch(API + '/auth/me', {
+      headers: { Authorization: 'Bearer ' + token },
+      cache: 'no-store',
+    })
+      .then((response) => response.status === 401)
+      .finally(() => {
+        sessionCheck = null
+      })
+  }
+  return sessionCheck
+}
+
 export async function api(path, options = {}) {
   const auth = getAuth()
   const headers = { ...(options.headers || {}) }
   if (auth && auth.token) headers.Authorization = 'Bearer ' + auth.token
   const res = await fetch(API + path, { ...options, cache: 'no-store', headers })
+  let invalidSession = false
   if (res.status === 401 && auth && !path.startsWith('/auth/')) {
-    clearAuth()
-    window.location.reload()
+    try {
+      invalidSession = await sessionIsInvalid(auth.token)
+    } catch (error) {
+      throw new Error(`Request was unauthorized, and session verification failed: ${error.message}`)
+    }
+    if (invalidSession) {
+      clearAuth()
+      window.location.reload()
+    }
   }
-  if (!res.ok) throw new Error((await res.text()).trim())
+  if (!res.ok) {
+    const message = (await res.text()).trim()
+    if (res.status === 401 && auth && !path.startsWith('/auth/') && !invalidSession) {
+      throw new Error(`Request was unauthorized, but your sign-in is still valid. ${message}`)
+    }
+    throw new Error(message)
+  }
   if (res.status === 204) return null
   const text = await res.text()
   return text ? JSON.parse(text) : null
