@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api, naira, toKobo, when } from './api.js'
 import SaleScreen from './Sale.jsx'
@@ -35,6 +35,8 @@ export default function App({ user, onLogout, onStoreNameChange }) {
   const [recent, setRecent] = useState([])
   const [outstanding, setOutstanding] = useState([])
   const [message, setMessage] = useState(null)
+  const productRefreshError = useRef(null)
+  const productRefreshInFlight = useRef(false)
   const [theme, setTheme] = useState(
     () =>
       localStorage.getItem('theme') ||
@@ -50,6 +52,25 @@ export default function App({ user, onLogout, onStoreNameChange }) {
     setMessage({ text, type })
     setTimeout(() => setMessage(null), 3500)
   }, [])
+
+  const refreshProducts = useCallback(async () => {
+    if (productRefreshInFlight.current) return
+    productRefreshInFlight.current = true
+    try {
+      setProducts(await api('/products'))
+      productRefreshError.current = null
+    } catch (err) {
+      const error = err instanceof TypeError
+        ? 'Cannot reach the server. Is the Go server still running?'
+        : err.message
+      if (productRefreshError.current !== error) {
+        notify(error, 'error')
+        productRefreshError.current = error
+      }
+    } finally {
+      productRefreshInFlight.current = false
+    }
+  }, [notify])
 
   async function load() {
     try {
@@ -85,6 +106,22 @@ export default function App({ user, onLogout, onStoreNameChange }) {
   useEffect(() => {
     load()
   }, [])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshProducts()
+    }, 5000)
+    const refreshWhenActive = () => {
+      if (document.visibilityState === 'visible') refreshProducts()
+    }
+    window.addEventListener('focus', refreshWhenActive)
+    document.addEventListener('visibilitychange', refreshWhenActive)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshWhenActive)
+      document.removeEventListener('visibilitychange', refreshWhenActive)
+    }
+  }, [refreshProducts])
 
   return (
     <div className="app">

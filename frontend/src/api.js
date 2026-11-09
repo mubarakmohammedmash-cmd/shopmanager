@@ -4,25 +4,32 @@ const KEY = 'shopmanager-auth'
 
 export function getAuth() {
   try {
-    return JSON.parse(localStorage.getItem(KEY))
+    localStorage.removeItem(KEY)
+  } catch {
+    // Continue with this tab's session if shared storage is unavailable.
+  }
+  try {
+    return JSON.parse(sessionStorage.getItem(KEY))
   } catch {
     return null
   }
 }
 
 export function setAuth(auth) {
-  localStorage.setItem(KEY, JSON.stringify(auth))
+  localStorage.removeItem(KEY)
+  sessionStorage.setItem(KEY, JSON.stringify(auth))
 }
 
 export function clearAuth() {
   localStorage.removeItem(KEY)
+  sessionStorage.removeItem(KEY)
 }
 
 export async function api(path, options = {}) {
   const auth = getAuth()
   const headers = { ...(options.headers || {}) }
   if (auth && auth.token) headers.Authorization = 'Bearer ' + auth.token
-  const res = await fetch(API + path, { ...options, headers })
+  const res = await fetch(API + path, { ...options, cache: 'no-store', headers })
   if (res.status === 401 && auth && !path.startsWith('/auth/')) {
     clearAuth()
     window.location.reload()
@@ -64,4 +71,3 @@ export const when = (s) =>
 // Lagos date (UTC+1) as YYYY-MM-DD, optionally some days ago
 export const lagos = (daysAgo = 0) =>
   new Date(Date.now() + 3600 * 1000 - daysAgo * 86400000).toISOString().slice(0, 10)
-
