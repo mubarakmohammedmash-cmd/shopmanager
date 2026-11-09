@@ -1,7 +1,7 @@
 export const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8080' : '/api')
 
 const KEY = 'shopmanager-auth'
-let sessionCheck = null
+const sessionChecks = new Map()
 
 export function getAuth() {
   try {
@@ -26,18 +26,26 @@ export function clearAuth() {
   sessionStorage.removeItem(KEY)
 }
 
-async function sessionIsInvalid(token) {
-  if (!sessionCheck) {
-    sessionCheck = fetch(API + '/auth/me', {
-      headers: { Authorization: 'Bearer ' + token },
+async function sessionIsInvalid(auth) {
+  if (!sessionChecks.has(auth.token)) {
+    const check = fetch(API + '/auth/me', {
+      headers: { Authorization: 'Bearer ' + auth.token },
       cache: 'no-store',
     })
-      .then((response) => response.status === 401)
-      .finally(() => {
-        sessionCheck = null
+      .then(async (response) => {
+        if (response.status === 401) return true
+        if (!response.ok) {
+          throw new Error(`session check returned HTTP ${response.status}`)
+        }
+        const user = await response.json()
+        return !user?.id || user.id !== auth.user?.id
       })
+      .finally(() => {
+        sessionChecks.delete(auth.token)
+      })
+    sessionChecks.set(auth.token, check)
   }
-  return sessionCheck
+  return sessionChecks.get(auth.token)
 }
 
 export async function api(path, options = {}) {
@@ -46,11 +54,16 @@ export async function api(path, options = {}) {
   if (auth && auth.token) headers.Authorization = 'Bearer ' + auth.token
   const res = await fetch(API + path, { ...options, cache: 'no-store', headers })
   let invalidSession = false
-  if (res.status === 401 && auth && !path.startsWith('/auth/')) {
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    if (!auth?.token) {
+      clearAuth()
+      window.location.reload()
+      throw new Error('Your sign-in is missing. Please sign in again.')
+    }
     try {
-      invalidSession = await sessionIsInvalid(auth.token)
+      invalidSession = await sessionIsInvalid(auth)
     } catch (error) {
-      throw new Error(`Request was unauthorized, and session verification failed: ${error.message}`)
+      throw new Error(`The server rejected ${path}, and sign-in could not be verified: ${error.message}`)
     }
     if (invalidSession) {
       clearAuth()
@@ -60,7 +73,7 @@ export async function api(path, options = {}) {
   if (!res.ok) {
     const message = (await res.text()).trim()
     if (res.status === 401 && auth && !path.startsWith('/auth/') && !invalidSession) {
-      throw new Error(`Request was unauthorized, but your sign-in is still valid. ${message}`)
+      throw new Error(`The server rejected ${path} even though /auth/me confirmed this account. ${message}`)
     }
     throw new Error(message)
   }
