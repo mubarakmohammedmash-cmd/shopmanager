@@ -1,5 +1,17 @@
 # Backend configuration
 
+## Persistent database on Render
+
+The backend stores its SQLite database in the file configured by `DB_PATH`. Render's service filesystem is temporary, so the database must be on a persistent disk. In the existing backend web service settings:
+
+1. Add a persistent disk mounted at `/var/data`.
+2. Set `DB_PATH` to `/var/data/shop.db`.
+3. Apply the disk and environment changes, then deploy/restart the service.
+
+The server now refuses to start on Render if `DB_PATH` is missing or relative. This prevents a healthy-looking deployment from silently creating an empty database on temporary storage. For local development, the default remains `shop.db`.
+
+The current live backend reports that setup is needed, which means its running database contains no users. Persistence prevents future resets but does not restore accounts or data that are already missing. Restore a backup to `/var/data/shop.db` before restarting if one is available; otherwise, configure the disk first and create the manager account again only after the backend starts with the persistent path.
+
 ## AI assistant
 
 The in-app assistant uses the OpenAI API for natural-language understanding and tool selection. Configure these environment variables on the backend:

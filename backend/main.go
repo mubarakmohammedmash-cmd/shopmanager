@@ -4,13 +4,16 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	_ "modernc.org/sqlite"
 )
 
@@ -40,15 +43,40 @@ var (
 	startedAt     = time.Now().UTC().Format(time.RFC3339)
 )
 
+func configuredDBPath() (string, error) {
+	dbPath := strings.TrimSpace(os.Getenv("DB_PATH"))
+	if dbPath == "" {
+		if strings.EqualFold(os.Getenv("RENDER"), "true") {
+			return "", errors.New("DB_PATH must point to a file under the persistent disk mount /var/data (for example, /var/data/shop.db)")
+		}
+		return "shop.db", nil
+	}
+	if strings.EqualFold(os.Getenv("RENDER"), "true") {
+		cleanPath := filepath.Clean(dbPath)
+		relativePath, err := filepath.Rel("/var/data", cleanPath)
+		if err != nil || relativePath == "." || relativePath == ".." ||
+			strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+			return "", errors.New("DB_PATH must point to a database file under the persistent disk mount /var/data")
+		}
+		dbPath = cleanPath
+	}
+	return dbPath, nil
+}
+
 func main() {
 	var err error
 
-	// SQLite database.
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "shop.db"
+	// Database: Turso (libSQL) when configured, otherwise local SQLite.
+	tursoURL := strings.TrimSpace(os.Getenv("TURSO_DATABASE_URL"))
+	if tursoURL != "" {
+		db, err = sql.Open("libsql", tursoURL+"?authToken="+os.Getenv("TURSO_AUTH_TOKEN"))
+	} else {
+		dbPath, pathErr := configuredDBPath()
+		if pathErr != nil {
+			log.Fatal("Invalid database configuration: ", pathErr)
+		}
+		db, err = sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	}
-	db, err = sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		log.Fatal("Failed to open database: ", err)
 	}
