@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,6 +30,18 @@ type authUser struct {
 	Role      string `json:"role"`
 	StoreName string `json:"store_name"`
 	StoreID   int64  `json:"-"`
+}
+
+func configuredSuperAdminUsername() string {
+	return strings.TrimSpace(os.Getenv("SUPER_ADMIN_USERNAME"))
+}
+
+func applyConfiguredRole(u authUser) authUser {
+	superAdminUsername := configuredSuperAdminUsername()
+	if superAdminUsername != "" && strings.EqualFold(u.Username, superAdminUsername) {
+		u.Role = "super_admin"
+	}
+	return u
 }
 
 type ctxKey struct{}
@@ -200,6 +213,9 @@ func userFromRequest(r *http.Request) (authUser, bool) {
 		JOIN stores st ON st.id = u.store_id
 		WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1`,
 		hashToken(t)).Scan(&u.ID, &u.Username, &u.Role, &u.StoreName, &u.StoreID)
+	if err == nil {
+		u = applyConfiguredRole(u)
+	}
 	return u, err == nil
 }
 
@@ -275,6 +291,8 @@ func requiredRole(r *http.Request) string {
 		return "any"
 	case m == "POST" && strings.HasPrefix(p, "/sales/") && strings.HasSuffix(p, "/void"):
 		return "any"
+	case strings.HasPrefix(p, "/superadmin/"):
+		return "super_admin"
 	}
 	return "admin"
 }
@@ -291,7 +309,11 @@ func withAuth(next http.Handler) http.Handler {
 			http.Error(w, "please log in", 401)
 			return
 		}
-		if need == "admin" && u.Role != "admin" {
+		if need == "super_admin" && u.Role != "super_admin" {
+			http.Error(w, "super admins only", 403)
+			return
+		}
+		if need == "admin" && u.Role != "admin" && u.Role != "super_admin" {
 			http.Error(w, "managers only", 403)
 			return
 		}
@@ -345,6 +367,11 @@ func signup(w http.ResponseWriter, r *http.Request) {
 	in.Username = strings.TrimSpace(in.Username)
 	if msg := validCreds(in.Username, in.Password); msg != "" {
 		http.Error(w, msg, 400)
+		return
+	}
+	if configuredSuperAdminUsername() != "" &&
+		strings.EqualFold(in.Username, configuredSuperAdminUsername()) {
+		http.Error(w, "that username is reserved for the configured super admin", http.StatusConflict)
 		return
 	}
 	in.StoreName = strings.TrimSpace(in.StoreName)
@@ -432,6 +459,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearFails(key)
+	u = applyConfiguredRole(u)
 	token, err := issueSession(u.ID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -520,6 +548,11 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, 400)
 		return
 	}
+	if configuredSuperAdminUsername() != "" &&
+		strings.EqualFold(in.Username, configuredSuperAdminUsername()) {
+		http.Error(w, "that username is reserved for the configured super admin", http.StatusConflict)
+		return
+	}
 	if in.Role == "" {
 		in.Role = "rep"
 	}
@@ -563,6 +596,23 @@ func resetPassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "password must be 6 to 200 characters", 400)
 		return
 	}
+	if id != currentUser(r).ID && configuredSuperAdminUsername() != "" {
+		var username string
+		err := db.QueryRow(`SELECT username FROM users WHERE id = ? AND store_id = ?`,
+			id, currentUser(r).StoreID).Scan(&username)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "user not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "failed to verify user", http.StatusInternalServerError)
+			return
+		}
+		if strings.EqualFold(username, configuredSuperAdminUsername()) {
+			http.Error(w, "only the configured super admin can change their password", http.StatusBadRequest)
+			return
+		}
+	}
 	hash, err := hashPassword(in.Password)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -598,6 +648,23 @@ func setActive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "you cannot deactivate your own account", 400)
 		return
 	}
+	if !in.Active && configuredSuperAdminUsername() != "" {
+		var username string
+		err := db.QueryRow(`SELECT username FROM users WHERE id = ? AND store_id = ?`,
+			id, currentUser(r).StoreID).Scan(&username)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "user not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "failed to verify user", http.StatusInternalServerError)
+			return
+		}
+		if strings.EqualFold(username, configuredSuperAdminUsername()) {
+			http.Error(w, "the configured super admin cannot be disabled", http.StatusBadRequest)
+			return
+		}
+	}
 	flag := 0
 	if in.Active {
 		flag = 1
@@ -617,6 +684,109 @@ func setActive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+type SuperAdminUserRow struct {
+	ID        int64  `json:"id"`
+	Username  string `json:"username"`
+	Role      string `json:"role"`
+	StoreID   int64  `json:"store_id"`
+	StoreName string `json:"store_name"`
+	Active    bool   `json:"active"`
+	CreatedAt string `json:"created_at"`
+}
+
+func listAllUsers(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(`SELECT u.id, u.username, u.role, s.id, s.name, u.active, u.created_at
+		FROM users u JOIN stores s ON s.id = u.store_id
+		ORDER BY s.name, u.username`)
+	if err != nil {
+		http.Error(w, "failed to load users", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	users := []SuperAdminUserRow{}
+	for rows.Next() {
+		var user SuperAdminUserRow
+		var active int
+		if err := rows.Scan(&user.ID, &user.Username, &user.Role, &user.StoreID, &user.StoreName, &active, &user.CreatedAt); err != nil {
+			http.Error(w, "failed to load users", http.StatusInternalServerError)
+			return
+		}
+		user.Active = active == 1
+		if strings.EqualFold(user.Username, configuredSuperAdminUsername()) &&
+			configuredSuperAdminUsername() != "" {
+			user.Role = "super_admin"
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "failed to load users", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, users)
+}
+
+func setGlobalUserActive(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "bad user id", http.StatusBadRequest)
+		return
+	}
+
+	var in struct {
+		Active bool `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if id == currentUser(r).ID {
+		http.Error(w, "you cannot change your own account status", http.StatusBadRequest)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, "failed to update user status", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	var username string
+	if err := tx.QueryRow(`SELECT username FROM users WHERE id = ?`, id).Scan(&username); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to update user status", http.StatusInternalServerError)
+		return
+	}
+	if strings.EqualFold(username, configuredSuperAdminUsername()) {
+		http.Error(w, "you cannot change the configured super admin's account status", http.StatusBadRequest)
+		return
+	}
+
+	active := 0
+	if in.Active {
+		active = 1
+	}
+	if _, err := tx.Exec(`UPDATE users SET active = ? WHERE id = ?`, active, id); err != nil {
+		http.Error(w, "failed to update user status", http.StatusInternalServerError)
+		return
+	}
+	if !in.Active {
+		if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+			http.Error(w, "failed to revoke user sessions", http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "failed to update user status", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/status", authStatus)
 	mux.HandleFunc("POST /auth/signup", signup)
@@ -631,6 +801,8 @@ func registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /users", createUser)
 	mux.HandleFunc("POST /users/{id}/password", resetPassword)
 	mux.HandleFunc("POST /users/{id}/active", setActive)
+	mux.HandleFunc("GET /superadmin/users", listAllUsers)
+	mux.HandleFunc("POST /superadmin/users/{id}/active", setGlobalUserActive)
 }
 
 // ---------- role-aware versions of products and sales ----------

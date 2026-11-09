@@ -5,6 +5,7 @@ import SaleScreen from './Sale.jsx'
 import HistoryScreen from './History.jsx'
 import ReportsScreen from './Reports.jsx'
 import UsersScreen from './Users.jsx'
+import SuperAdminScreen from './SuperAdmin.jsx'
 import StoreScreen from './Store.jsx'
 import Assistant from './Assistant.jsx'
 
@@ -25,9 +26,14 @@ const REP_TABS = [
   ['expenses', 'Expenses'],
 ]
 
+const SUPER_ADMIN_TAB = ['superadmin', 'Super admin']
+
 export default function App({ user, onLogout, onStoreNameChange }) {
-  const isAdmin = user.role === 'admin'
-  const tabs = isAdmin ? ADMIN_TABS : REP_TABS
+  const isSuperAdmin = user.role === 'super_admin'
+  const isAdmin = user.role === 'admin' || isSuperAdmin
+  const tabs = isSuperAdmin
+    ? [SUPER_ADMIN_TAB, ...ADMIN_TABS]
+    : isAdmin ? ADMIN_TABS : REP_TABS
   const [tab, setTab] = useState(tabs[0][0])
   const [products, setProducts] = useState([])
   const [report, setReport] = useState(null)
@@ -140,7 +146,7 @@ export default function App({ user, onLogout, onStoreNameChange }) {
             ))}
           </div>
           <div className="account-actions">
-            <span>{user.username} ({isAdmin ? 'Manager' : 'Sales rep'})</span>
+            <span>{user.username} ({isSuperAdmin ? 'Super admin' : isAdmin ? 'Manager' : 'Sales rep'})</span>
             <button className="theme-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? '☀ Light' : '🌙 Dark'}
             </button>
@@ -150,6 +156,9 @@ export default function App({ user, onLogout, onStoreNameChange }) {
       </div>
 
       <div className="page">
+        {tab === 'superadmin' && isSuperAdmin && (
+          <SuperAdminScreen notify={notify} currentUserId={user.id} />
+        )}
         {tab === 'dashboard' && isAdmin && <Dashboard report={report} recent={recent} outstanding={outstanding} onOpenHistory={() => setTab('history')} />}
         {tab === 'rep-dashboard' && !isAdmin && <RepDashboard onOpenHistory={() => setTab('history')} />}
         {tab === 'sale' && <SaleScreen products={products} reload={load} notify={notify} isAdmin={isAdmin} />}
