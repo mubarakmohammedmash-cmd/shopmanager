@@ -213,6 +213,9 @@ func userFromRequest(r *http.Request) (authUser, bool) {
 		JOIN stores st ON st.id = u.store_id
 		WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1`,
 		hashToken(t)).Scan(&u.ID, &u.Username, &u.Role, &u.StoreName, &u.StoreID)
+	if err != nil {
+		log.Println("session lookup failed:", err)
+	}
 	if err == nil {
 		u = applyConfiguredRole(u)
 	}
