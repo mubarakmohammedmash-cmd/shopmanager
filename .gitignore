@@ -5,3 +5,4 @@ backend/shop.db-*
 node_modules/
 frontend/dist/
 .env
+backend/shopmanager
