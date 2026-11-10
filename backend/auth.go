@@ -208,11 +208,7 @@ func userFromRequest(r *http.Request) (authUser, bool) {
 		return authUser{}, false
 	}
 	var u authUser
-	err := db.QueryRow(`SELECT u.id, u.username, u.role, st.name, u.store_id
-		FROM sessions s JOIN users u ON u.id = s.user_id
-		JOIN stores st ON st.id = u.store_id
-		WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1`,
-		hashToken(t)).Scan(&u.ID, &u.Username, &u.Role, &u.StoreName, &u.StoreID)
+	u, err := lookupSession(hashToken(t))
 	if err != nil {
 		log.Println("session lookup failed:", err)
 	}
