@@ -98,6 +98,7 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
   const [focusPaymentForm, setFocusPaymentForm] = useState(false)
   const paymentFormRef = useRef(null)
   const paymentAmountInputRef = useRef(null)
+  const saleDetailsRef = useRef(null)
 
   async function loadHistory() {
     try {
@@ -124,6 +125,15 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
       notify(error.message || 'Could not load payment history', 'error')
     }
   }
+
+  useEffect(() => {
+    if (!selectedSale) return
+
+    saleDetailsRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  }, [selectedSale])
 
   useEffect(() => {
     if (!focusPaymentForm || !selectedSale) return
@@ -468,7 +478,7 @@ export default function HistoryScreen({ notify, reload, isAdmin }) {
       )}
 
       {selectedSale && (
-        <div className="card">
+        <div className="card" ref={saleDetailsRef}>
           <h2>Receipt #{selectedSale.id}</h2>
 
           <div className="cart-line">
