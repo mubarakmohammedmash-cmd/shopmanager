@@ -226,6 +226,19 @@ func TestPartialSaleAndInstallmentPayments(t *testing.T) {
 		t.Fatalf("split payment without enough cash for change status = %d, want %d",
 			invalidChangeResponse.Code, http.StatusBadRequest)
 	}
+
+	chart, err := assistantSalesChart(user, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chartRevenue int64
+	for _, point := range chart.Points {
+		chartRevenue += point.Value
+	}
+	if len(chart.Points) != 7 || chartRevenue != 1500 {
+		t.Fatalf("7-day sales chart has %d points and %d revenue, want 7 and 1500",
+			len(chart.Points), chartRevenue)
+	}
 }
 
 func requestAs(t *testing.T, user authUser, method, path string, body any, handler http.HandlerFunc) *httptest.ResponseRecorder {

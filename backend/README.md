@@ -14,16 +14,17 @@ The current live backend reports that setup is needed, which means its running d
 
 ## AI assistant
 
-The in-app assistant uses the OpenAI API for natural-language understanding and tool selection. Configure these environment variables on the backend:
+The in-app assistant uses OpenAI for general questions, image and document analysis, optional web search, and shop-specific tools. Configure these environment variables on the backend:
 
 - `OPENAI_API_KEY` — required. Keep this secret on the server; never put it in a frontend environment variable.
 - `OPENAI_MODEL` — optional. Defaults to `gpt-4o-mini`.
+- `OPENAI_RESPONSES_MODEL` — optional. Model for image/document analysis and web search; defaults to `OPENAI_MODEL`, then `gpt-4o-mini`.
 
-The assistant sends the user's recent chat messages and only the store data needed for an enabled read tool (today's summary, matching products, low-stock products, or recent sales) to OpenAI. Requests are authenticated and store-scoped. Sales representatives only receive their own sales and do not receive product costs or profit figures. Voice input is transcribed by the browser's speech-recognition service; only the resulting text is sent to this backend.
+The assistant sends recent chat messages to OpenAI. Image and document attachments (up to 3 files, 4 MB each) and explicitly requested web searches use the OpenAI Responses API. Supported attachments include common image formats, PDF, text, spreadsheets, and Office documents. Voice input and spoken replies use browser speech services; recognized voice text is sent to OpenAI like typed messages. Web-search citations are shown as links in the assistant.
 
-The assistant can navigate to screens available to the signed-in role. It can prepare a product draft, but it does not save it: a manager must review the details and explicitly choose **Confirm and add**. Other writes, including sales, payments, and voids, are not available through the assistant.
+Requests are authenticated and store-scoped. Shop data is provided only when the assistant calls an enabled read tool. Sales representatives only receive their own sales and do not receive product costs or profit figures. The assistant can create a daily sales chart from permitted sales data, navigate to screens available to the signed-in role, and prepare a product draft. It does not save the draft: a manager must review and explicitly choose **Confirm and add**. Other writes, including sales, payments, and voids, are not available through the assistant.
 
-For local development, set `OPENAI_API_KEY` in the backend process environment before starting the Go server. For deployment, configure it in the backend service's environment settings. API usage is billed separately from a ChatGPT subscription.
+Uploaded files, messages, and web searches are sent to OpenAI for processing. OpenAI API usage may be billed separately from a ChatGPT subscription. For local development, set `OPENAI_API_KEY` in the backend process environment before starting the Go server. For deployment, configure it in the backend service's environment settings.
 
 ## Super admin
 
