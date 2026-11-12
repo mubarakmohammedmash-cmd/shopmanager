@@ -130,6 +130,7 @@ func main() {
 	mux.HandleFunc("GET /reports/range", rangeReport)
 	mux.HandleFunc("GET /reports/export", exportCSV)
 	mux.HandleFunc("POST /assistant/chat", assistantChat)
+	mux.HandleFunc("POST /assistant/transcribe", assistantTranscribe)
 
 	registerAuthRoutes(mux)
 

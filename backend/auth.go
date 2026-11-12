@@ -284,6 +284,8 @@ func requiredRole(r *http.Request) string {
 		return "any"
 	case m == "POST" && p == "/assistant/chat":
 		return "any"
+	case m == "POST" && p == "/assistant/transcribe":
+		return "any"
 	case m == "GET" && p == "/expenses":
 		return "any"
 	case m == "POST" && p == "/expenses":

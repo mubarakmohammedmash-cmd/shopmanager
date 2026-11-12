@@ -21,10 +21,13 @@ export default function Assistant({ isAdmin, setTab, reload }) {
   const [webSearch, setWebSearch] = useState(false)
   const [busy, setBusy] = useState(false)
   const [listening, setListening] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
   const [speakReplies, setSpeakReplies] = useState(false)
   const [draft, setDraft] = useState(null)
   const [savingDraft, setSavingDraft] = useState(false)
-  const recognitionRef = useRef(null)
+  const recorderRef = useRef(null)
+  const audioStreamRef = useRef(null)
+  const audioChunksRef = useRef([])
   const conversationRef = useRef(null)
   const fileInputRef = useRef(null)
 
@@ -37,10 +40,12 @@ export default function Assistant({ isAdmin, setTab, reload }) {
 
   useEffect(() => () => {
     window.speechSynthesis?.cancel()
-    if (recognitionRef.current) {
-      recognitionRef.current.onend = null
-      recognitionRef.current.stop()
+    if (recorderRef.current) {
+      recorderRef.current.onstop = null
+      recorderRef.current.onerror = null
+      if (recorderRef.current.state === 'recording') recorderRef.current.stop()
     }
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop())
   }, [])
 
   function readAttachment(file) {
@@ -103,11 +108,24 @@ export default function Assistant({ isAdmin, setTab, reload }) {
           chart: result.action?.chart || null,
         },
       ])
-      if (readReply && window.speechSynthesis) {
-        window.speechSynthesis.cancel()
-        const utterance = new SpeechSynthesisUtterance(reply)
-        utterance.lang = 'en-NG'
-        window.speechSynthesis.speak(utterance)
+      if (readReply) {
+        if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
+          setMessages((current) => [
+            ...current,
+            { role: 'assistant', content: 'This browser does not support spoken replies. Try a recent browser with speech synthesis enabled.' },
+          ])
+        } else {
+          window.speechSynthesis.cancel()
+          const utterance = new SpeechSynthesisUtterance(reply)
+          utterance.lang = 'en-NG'
+          utterance.onerror = (event) => {
+            setMessages((current) => [
+              ...current,
+              { role: 'assistant', content: `Could not speak the reply: ${event.error}. Check your device's speech settings.` },
+            ])
+          }
+          window.speechSynthesis.speak(utterance)
+        }
       }
     } catch (error) {
       setMessages((current) => [
@@ -141,7 +159,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
       if (file.size === 0 || file.size > MAX_FILE_SIZE) {
         setMessages((current) => [
           ...current,
-          { role: 'assistant', content: `$          {file.name} must be 4 MB or smaller.` },
+          { role: 'assistant', content: `${file.name} must be 4 MB or smaller.` },
         ])
         return
       }
@@ -166,52 +184,102 @@ export default function Assistant({ isAdmin, setTab, reload }) {
     setSpeakReplies(!speakReplies)
   }
 
-  function startVoiceInput() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognition) {
+  function audioExtension(mimeType) {
+    if (mimeType.includes('mp4')) return 'm4a'
+    if (mimeType.includes('ogg')) return 'ogg'
+    if (mimeType.includes('mpeg') || mimeType.includes('mp3')) return 'mp3'
+    return 'webm'
+  }
+
+  async function startVoiceInput() {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       setMessages((current) => [
         ...current,
-        { role: 'assistant', content: 'Voice input is not supported in this browser. You can type your request instead.' },
+        { role: 'assistant', content: 'Voice recording is not supported in this browser. Use a recent browser over HTTPS, or type your message.' },
       ])
       return
     }
 
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'en-NG'
-    recognition.interimResults = false
-    recognition.maxAlternatives = 1
-    recognitionRef.current = recognition
-    recognition.onresult = (event) => {
-      const spoken = event.results[0][0].transcript.trim()
-      const text = [input.trim(), spoken].filter(Boolean).join(' ')
-      setInput(text)
-      setSpeakReplies(true)
-      submitMessage(text, [], false, true)
-    }
-    recognition.onerror = (event) => {
-      setMessages((current) => [
-        ...current,
-        { role: 'assistant', content: event.error === 'not-allowed'
-          ? 'Microphone access was denied. Allow microphone access and try again.'
-          : `Voice input failed: ${event.error}. You can type your request instead.` },
-      ])
-    }
-    recognition.onend = () => {
-      setListening(false)
-      recognitionRef.current = null
-    }
-
     try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      audioStreamRef.current = stream
+      audioChunksRef.current = []
+      const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus']
+        .find((type) => MediaRecorder.isTypeSupported(type))
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+      recorderRef.current = recorder
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data)
+      }
+      recorder.onerror = () => {
+        recorder.onstop = null
+        stream.getTracks().forEach((track) => track.stop())
+        audioStreamRef.current = null
+        recorderRef.current = null
+        audioChunksRef.current = []
+        setListening(false)
+        setMessages((current) => [
+          ...current,
+          { role: 'assistant', content: 'Microphone recording failed. Check microphone access and try again.' },
+        ])
+      }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop())
+        audioStreamRef.current = null
+        recorderRef.current = null
+        setListening(false)
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        audioChunksRef.current = []
+        if (!blob.size) {
+          setMessages((current) => [
+            ...current,
+            { role: 'assistant', content: 'No audio was recorded. Try speaking after recording starts.' },
+          ])
+          return
+        }
+
+        setTranscribing(true)
+        try {
+          const form = new FormData()
+          form.append('audio', blob, `voice-message.${audioExtension(blob.type)}`)
+          const result = await api('/assistant/transcribe', {
+            method: 'POST',
+            body: form,
+          })
+          const transcript = String(result.text || '').trim()
+          if (!transcript) throw new Error('No speech was detected. Please try again.')
+          setSpeakReplies(true)
+          setTranscribing(false)
+          await submitMessage(transcript, [], webSearch, true)
+        } catch (error) {
+          setMessages((current) => [
+            ...current,
+            { role: 'assistant', content: `Voice request failed: ${error.message}` },
+          ])
+        } finally {
+          setTranscribing(false)
+        }
+      }
+      recorder.start()
+      setSpeakReplies(true)
       setListening(true)
-      if ('speechSynthesis' in window) setSpeakReplies(true)
-      recognition.start()
     } catch (error) {
+      recorderRef.current = null
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop())
+      audioStreamRef.current = null
       setListening(false)
-      recognitionRef.current = null
       setMessages((current) => [
         ...current,
-        { role: 'assistant', content: `Could not start voice input: ${error.message}` },
+        { role: 'assistant', content: error.name === 'NotAllowedError'
+          ? 'Microphone access was denied. Allow microphone access in your browser and try again.'
+          : `Could not start microphone recording: ${error.message}` },
       ])
+    }
+  }
+
+  function stopVoiceInput() {
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.stop()
     }
   }
 
@@ -314,12 +382,14 @@ export default function Assistant({ isAdmin, setTab, reload }) {
               </div>
             )}
 
+            {listening && <div className="assistant-message">Listening… Press “Stop &amp; send” when you’re done.</div>}
+            {transcribing && <div className="assistant-message">Transcribing your voice…</div>}
             {busy && <div className="assistant-message">Thinking…</div>}
           </div>
 
           <form className="assistant-composer" onSubmit={sendMessage}>
             <p className="assistant-privacy">
-              Voice uses your browser. Recognized text, messages, files, and web searches go to OpenAI; usage may incur API charges.
+              Voice recordings, messages, files, and web searches go to OpenAI; usage may incur API charges. Replies use your browser's voice.
             </p>
             {attachments.length > 0 && (
               <div className="assistant-selected-files">
@@ -346,7 +416,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
                   event.currentTarget.form?.requestSubmit()
                 }
               }}
-              disabled={busy || Boolean(draft) || listening}
+              disabled={busy || transcribing || Boolean(draft) || listening}
             />
             <div>
               <input
@@ -356,26 +426,27 @@ export default function Assistant({ isAdmin, setTab, reload }) {
                 multiple
                 accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.xml,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.rtf,.odt"
                 onChange={selectFiles}
-                disabled={busy || Boolean(draft)}
+                disabled={busy || transcribing || Boolean(draft)}
               />
-              <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()} disabled={busy || Boolean(draft) || attachments.length >= MAX_FILES}>
+              <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()} disabled={busy || transcribing || Boolean(draft) || attachments.length >= MAX_FILES}>
                 Attach
               </button>
-              <button type="button" className={webSearch ? '' : 'ghost'} aria-pressed={webSearch} onClick={() => setWebSearch((current) => !current)} disabled={busy || Boolean(draft)}>
+              <button type="button" className={webSearch ? '' : 'ghost'} aria-pressed={webSearch} onClick={() => setWebSearch((current) => !current)} disabled={busy || transcribing || Boolean(draft)}>
                 {webSearch ? 'Web search on' : 'Search web'}
               </button>
-              <button type="button" className={speakReplies ? '' : 'ghost'} aria-pressed={speakReplies} onClick={toggleVoiceReplies} disabled={!('speechSynthesis' in window) || busy || Boolean(draft)}>
+              <button type="button" className={speakReplies ? '' : 'ghost'} aria-pressed={speakReplies} onClick={toggleVoiceReplies} disabled={!('speechSynthesis' in window) || busy || transcribing || Boolean(draft)}>
                 {speakReplies ? 'Voice replies on' : 'Voice replies'}
               </button>
-              <button type="button" className="ghost" onClick={startVoiceInput} disabled={busy || Boolean(draft) || listening}>
-                {listening ? 'Listening…' : 'Speak'}
+              <button
+                type="button"
+                className={listening ? '' : 'ghost'}
+                onClick={listening ? stopVoiceInput : startVoiceInput}
+                disabled={busy || transcribing || Boolean(draft)}
+                aria-pressed={listening}
+              >
+                {listening ? 'Stop & send' : 'Speak'}
               </button>
-              {listening && (
-                <button type="button" className="ghost" onClick={() => recognitionRef.current?.stop()}>
-                  Stop
-                </button>
-              )}
-              <button type="submit" disabled={busy || Boolean(draft) || (!input.trim() && attachments.length === 0)}>
+              <button type="submit" disabled={busy || transcribing || Boolean(draft) || (!input.trim() && attachments.length === 0)}>
                 Send
               </button>
             </div>

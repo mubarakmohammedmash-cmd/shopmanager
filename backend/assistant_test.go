@@ -3,6 +3,10 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -84,5 +88,76 @@ func TestAssistantResponsesInputIncludesFiles(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Errorf("Responses input is missing %q: %s", expected, text)
 		}
+	}
+}
+
+func TestRequestOpenAITranscription(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("transcription method = %s, want POST", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("transcription authorization = %q", r.Header.Get("Authorization"))
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse transcription form: %v", err)
+			http.Error(w, "bad multipart form", http.StatusBadRequest)
+			return
+		}
+		if model := r.FormValue("model"); model != "gpt-transcribe" {
+			t.Errorf("transcription model = %q, want gpt-transcribe", model)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("transcription file missing: %v", err)
+			http.Error(w, "missing file", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		if header.Filename != "voice.webm" {
+			t.Errorf("transcription filename = %q, want voice.webm", header.Filename)
+		}
+		data, err := io.ReadAll(file)
+		if err != nil || string(data) != "audio bytes" {
+			t.Errorf("transcription file data = %q, error = %v", data, err)
+		}
+		_, _ = w.Write([]byte(`{"text":"hello ShopManager"}`))
+	}))
+	defer server.Close()
+
+	originalURL := assistantTranscriptionAPIURL
+	assistantTranscriptionAPIURL = server.URL
+	t.Cleanup(func() { assistantTranscriptionAPIURL = originalURL })
+
+	transcription, err := requestOpenAITranscription(
+		t.Context(), "test-key", "voice.webm", []byte("audio bytes"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transcription.Text != "hello ShopManager" {
+		t.Fatalf("transcription text = %q, want hello ShopManager", transcription.Text)
+	}
+}
+
+func TestAssistantTranscribeRejectsUnsupportedAudio(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var body strings.Builder
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("audio", "script.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("not audio"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/assistant/transcribe", strings.NewReader(body.String()))
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+
+	assistantTranscribe(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported audio status = %d, want %d", response.Code, http.StatusBadRequest)
 	}
 }

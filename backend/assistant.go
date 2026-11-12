@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,9 +26,12 @@ const (
 	maxAssistantMessageLength  = 4000
 	maxAssistantAttachments    = 3
 	maxAssistantAttachmentSize = 4 << 20
+	maxAssistantAudioSize      = 20 << 20
 	maxAssistantToolRounds     = 4
 	maxAssistantCallsPerMinute = 20
 )
+
+var assistantTranscriptionAPIURL = "https://api.openai.com/v1/audio/transcriptions"
 
 type assistantMessage struct {
 	Role    string `json:"role"`
@@ -107,6 +111,10 @@ type openAIResponsesResponse struct {
 type assistantCitation struct {
 	Title string `json:"title"`
 	URL   string `json:"url"`
+}
+
+type openAITranscriptionResponse struct {
+	Text string `json:"text"`
 }
 
 var assistantRateLimit = struct {
@@ -247,6 +255,110 @@ func assistantChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "The AI assistant reached its tool-call limit. Please try a more specific request.", http.StatusBadGateway)
+}
+
+func assistantTranscribe(w http.ResponseWriter, r *http.Request) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		http.Error(w, "The AI assistant is not configured. Set OPENAI_API_KEY on the backend.", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAssistantAudioSize+(1<<20))
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		http.Error(w, "Send a supported audio recording no larger than 20 MB", http.StatusBadRequest)
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, header, err := r.FormFile("audio")
+	if err != nil {
+		http.Error(w, "Audio recording is missing", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	filename := filepath.Base(header.Filename)
+	extension := strings.ToLower(filepath.Ext(filename))
+	allowedExtensions := map[string]bool{
+		".webm": true, ".mp4": true, ".m4a": true, ".mp3": true,
+		".mpeg": true, ".mpga": true, ".wav": true, ".ogg": true, ".flac": true,
+	}
+	if !allowedExtensions[extension] {
+		http.Error(w, "Unsupported audio format", http.StatusBadRequest)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxAssistantAudioSize+1))
+	if err != nil {
+		http.Error(w, "Could not read the audio recording", http.StatusBadRequest)
+		return
+	}
+	if len(data) == 0 || len(data) > maxAssistantAudioSize {
+		http.Error(w, "Audio recording must be no larger than 20 MB", http.StatusBadRequest)
+		return
+	}
+
+	u := currentUser(r)
+	if !allowAssistantRequest(u.ID) {
+		http.Error(w, "The assistant is receiving too many requests. Please wait a minute and try again.", http.StatusTooManyRequests)
+		return
+	}
+	transcription, err := requestOpenAITranscription(r.Context(), apiKey, filename, data)
+	if err != nil {
+		log.Printf("AI assistant transcription failed for user %d: %v", u.ID, err)
+		http.Error(w, "Could not transcribe the recording. Please try again or type your message.", http.StatusBadGateway)
+		return
+	}
+	text := strings.TrimSpace(transcription.Text)
+	if text == "" {
+		http.Error(w, "No speech was detected. Please try again.", http.StatusUnprocessableEntity)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"text": text})
+}
+
+func requestOpenAITranscription(ctx context.Context, apiKey, filename string, data []byte) (openAITranscriptionResponse, error) {
+	var result openAITranscriptionResponse
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", "gpt-transcribe"); err != nil {
+		return result, fmt.Errorf("prepare transcription model: %w", err)
+	}
+	part, err := writer.CreateFormFile("file", filepath.Base(filename))
+	if err != nil {
+		return result, fmt.Errorf("prepare transcription file: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return result, fmt.Errorf("prepare transcription data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return result, fmt.Errorf("finish transcription request: %w", err)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost,
+		assistantTranscriptionAPIURL, &body)
+	if err != nil {
+		return result, fmt.Errorf("create transcription request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return result, fmt.Errorf("call OpenAI transcription API: %w", err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
+	if err != nil {
+		return result, fmt.Errorf("read transcription result: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return result, fmt.Errorf("OpenAI transcription API returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return result, fmt.Errorf("decode transcription result: %w", err)
+	}
+	return result, nil
 }
 
 func assistantSystemPrompt(u authUser) string {
