@@ -214,6 +214,12 @@ export default function Assistant({ isAdmin, setTab, reload }) {
               maxLength={4000}
               rows={2}
               onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  event.currentTarget.form?.requestSubmit()
+                }
+              }}
               disabled={busy || Boolean(draft)}
             />
             <div>

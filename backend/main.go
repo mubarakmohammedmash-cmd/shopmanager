@@ -82,7 +82,7 @@ func main() {
 	}
 
 	db.SetMaxOpenConns(1)
-	db.SetConnMaxIdleTime(3 * time.Second)
+	db.SetMaxIdleConns(0)
 
 	if err := db.Ping(); err != nil {
 		log.Fatal("Failed to connect to database: ", err)
