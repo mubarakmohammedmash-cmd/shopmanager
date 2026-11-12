@@ -18,14 +18,22 @@ const METHODS = [
 export default function SaleScreen({ products, reload, notify, isAdmin }) {
   const [entry, setEntry] = useState('')
   const [cart, setCart] = useState([])
-  const [payment, setPayment] = useState('cash')
-  const [received, setReceived] = useState('')
+  const [tenders, setTenders] = useState({ cash: '', transfer: '', pos: '' })
   const [customerName, setCustomerName] = useState('')
 
   const parsed = parseEntry(entry)
   const shown = products.filter((p) => p.name.toLowerCase().includes(parsed.name.toLowerCase()))
   const total = cart.reduce((sum, c) => sum + toKobo(c.price || 0) * c.qty, 0)
-  const amountReceived = received.trim() === '' ? total : toKobo(received)
+  const hasTenderInput = Object.values(tenders).some((amount) => amount.trim() !== '')
+  const paymentAmounts = Object.fromEntries(
+    METHODS.map(([method]) => [
+      method,
+      tenders[method].trim() === '' ? 0 : toKobo(tenders[method]),
+    ]),
+  )
+  const amountReceived = hasTenderInput
+    ? Object.values(paymentAmounts).reduce((sum, amount) => sum + amount, 0)
+    : total
   const changeDue = Math.max(0, amountReceived - total)
   const shortBy = Math.max(0, total - amountReceived)
 
@@ -159,22 +167,28 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
     })
     setCart(updatedCart)
     if (updatedCart.length === 0) {
-      setPayment('cash')
-      setReceived('')
+      setTenders({ cash: '', transfer: '', pos: '' })
       setCustomerName('')
     }
   }
 
   function clearSale() {
     setCart([])
-    setPayment('cash')
-    setReceived('')
+    setTenders({ cash: '', transfer: '', pos: '' })
     setCustomerName('')
   }
 
   async function complete() {
-    if (!Number.isSafeInteger(amountReceived) || amountReceived < 0) {
-      notify('Enter a valid amount received', 'error')
+    if (
+      !Number.isSafeInteger(amountReceived) ||
+      amountReceived < 0 ||
+      Object.values(paymentAmounts).some((amount) => !Number.isSafeInteger(amount) || amount < 0)
+    ) {
+      notify('Enter valid payment amounts', 'error')
+      return
+    }
+    if (changeDue > paymentAmounts.cash) {
+      notify('Cash received must cover any change given', 'error')
       return
     }
     if (shortBy > 0 && !customerName.trim()) {
@@ -191,8 +205,14 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
       const r = await api('/sales', {
         method: 'POST',
         body: JSON.stringify({
-          payment_method: payment,
-          amount_received: amountReceived,
+          payments: hasTenderInput
+            ? METHODS
+              .filter(([method]) => paymentAmounts[method] > 0)
+              .map(([payment_method]) => ({
+                payment_method,
+                amount: paymentAmounts[payment_method],
+              }))
+            : [{ payment_method: 'cash', amount: total }],
           customer_name: customerName.trim(),
           items: cart.map((c) => ({
             product_id: c.id,
@@ -202,8 +222,7 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
         }),
       })
       setCart([])
-      setPayment('cash')
-      setReceived('')
+      setTenders({ cash: '', transfer: '', pos: '' })
       setCustomerName('')
       notify(r.balance > 0
         ? `Sale recorded for ${customerName.trim()}: ${naira(r.balance)} still owed`
@@ -283,33 +302,40 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
         ))}
         {cart.length > 0 && (
           <>
-            <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+            <h3 style={{ marginTop: 16 }}>Payment breakdown</h3>
+            <div className="form-grid">
               {METHODS.map(([key, label]) => (
-                <button
-                  key={key}
-                  className={payment === key ? '' : 'ghost'}
-                  onClick={() => setPayment(key)}
-                  style={{ flex: 1 }}
-                >
-                  {label}
-                </button>
+                <label key={key} className="field">
+                  <span>{label} received (₦)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={tenders[key]}
+                    placeholder="0.00"
+                    onChange={(event) =>
+                      setTenders((previous) => ({
+                        ...previous,
+                        [key]: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
               ))}
+            </div>
+            {!hasTenderInput && (
+              <div className="muted">
+                Leave all payment amounts blank to record the full total as cash.
+              </div>
+            )}
+            <div className="cart-line">
+              <span>Total received now</span>
+              <strong>{naira(amountReceived)}</strong>
             </div>
             <div className="cart-total">
               <span>Total (sale revenue)</span>
               <span>{naira(total)}</span>
             </div>
-            <label className="field" style={{ marginTop: 12 }}>
-              <span>Amount received now (₦)</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={received}
-                placeholder={(total / 100).toFixed(2)}
-                onChange={(e) => setReceived(e.target.value)}
-              />
-            </label>
             {shortBy > 0 && (
               <label className="field" style={{ marginTop: 12 }}>
                 <span>Customer name (required for an unpaid balance)</span>
@@ -328,10 +354,13 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
                 {naira(shortBy > 0 ? shortBy : changeDue)}
               </strong>
             </div>
-            {payment === 'transfer' && changeDue > 0 && (
+            {(paymentAmounts.transfer > 0 || paymentAmounts.pos > 0 || changeDue > 0) && (
               <div className="muted">
-                Confirm that the transfer has arrived before completing the sale.
-                Any change due is a cash payout from the drawer.
+                {paymentAmounts.transfer > 0 &&
+                  'Confirm the transfer has arrived before completing the sale. '}
+                {paymentAmounts.pos > 0 &&
+                  'Confirm the POS transaction succeeded before completing the sale. '}
+                {changeDue > 0 && 'Change is paid from the cash drawer.'}
               </div>
             )}
             <button onClick={complete} disabled={shortBy > 0 && !customerName.trim()}>

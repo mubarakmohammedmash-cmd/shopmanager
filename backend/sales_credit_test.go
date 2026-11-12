@@ -178,6 +178,54 @@ func TestPartialSaleAndInstallmentPayments(t *testing.T) {
 	if len(payments) != 3 {
 		t.Fatalf("payment history has %d entries, want 3", len(payments))
 	}
+
+	splitSaleResponse := requestAs(t, user, http.MethodPost, "/sales", map[string]any{
+		"items": []map[string]any{{"product_id": 1, "qty": 1}},
+		"payments": []map[string]any{
+			{"amount": 200, "payment_method": "cash"},
+			{"amount": 300, "payment_method": "pos"},
+		},
+	}, createSaleV3)
+	if splitSaleResponse.Code != http.StatusCreated {
+		t.Fatalf("split-tender sale status = %d, want %d: %s",
+			splitSaleResponse.Code, http.StatusCreated, splitSaleResponse.Body)
+	}
+	var splitSale struct {
+		SaleID int64 `json:"sale_id"`
+		Total  int64 `json:"total"`
+		Change int64 `json:"change_given"`
+	}
+	if err := json.Unmarshal(splitSaleResponse.Body.Bytes(), &splitSale); err != nil {
+		t.Fatal(err)
+	}
+	if splitSale.Total != 500 || splitSale.Change != 0 {
+		t.Fatalf("split sale total/change = %d/%d, want 500/0", splitSale.Total, splitSale.Change)
+	}
+
+	splitPaymentsResponse := requestAs(t, user, http.MethodGet,
+		"/sales/"+strconv.FormatInt(splitSale.SaleID, 10)+"/payments",
+		nil, salePayments)
+	var splitPayments []SalePayment
+	if err := json.Unmarshal(splitPaymentsResponse.Body.Bytes(), &splitPayments); err != nil {
+		t.Fatal(err)
+	}
+	if len(splitPayments) != 2 ||
+		splitPayments[0].Amount != 200 || splitPayments[0].PaymentMethod != "cash" ||
+		splitPayments[1].Amount != 300 || splitPayments[1].PaymentMethod != "pos" {
+		t.Fatalf("split payment ledger = %+v, want cash 200 and POS 300", splitPayments)
+	}
+
+	invalidChangeResponse := requestAs(t, user, http.MethodPost, "/sales", map[string]any{
+		"items": []map[string]any{{"product_id": 1, "qty": 1}},
+		"payments": []map[string]any{
+			{"amount": 49, "payment_method": "cash"},
+			{"amount": 501, "payment_method": "transfer"},
+		},
+	}, createSaleV3)
+	if invalidChangeResponse.Code != http.StatusBadRequest {
+		t.Fatalf("split payment without enough cash for change status = %d, want %d",
+			invalidChangeResponse.Code, http.StatusBadRequest)
+	}
 }
 
 func requestAs(t *testing.T, user authUser, method, path string, body any, handler http.HandlerFunc) *httptest.ResponseRecorder {

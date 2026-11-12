@@ -54,11 +54,17 @@ type saleItemReq2 struct {
 	Price     *int64 `json:"price"`
 }
 
+type saleTenderReq struct {
+	Amount        int64  `json:"amount"`
+	PaymentMethod string `json:"payment_method"`
+}
+
 type saleReq2 struct {
-	Items          []saleItemReq2 `json:"items"`
-	PaymentMethod  string         `json:"payment_method"`
-	AmountReceived *int64         `json:"amount_received"`
-	CustomerName   string         `json:"customer_name"`
+	Items          []saleItemReq2  `json:"items"`
+	Payments       []saleTenderReq `json:"payments"`
+	PaymentMethod  string          `json:"payment_method"`
+	AmountReceived *int64          `json:"amount_received"`
+	CustomerName   string          `json:"customer_name"`
 }
 
 var validPayment = map[string]bool{"cash": true, "transfer": true, "pos": true}

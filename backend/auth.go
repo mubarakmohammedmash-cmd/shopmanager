@@ -841,10 +841,10 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 	}
 
 	method := req.PaymentMethod
-	if method == "" {
+	if req.Payments == nil && method == "" {
 		method = "cash"
 	}
-	if !validPayment[method] {
+	if req.Payments == nil && !validPayment[method] {
 		http.Error(w, "payment must be cash, transfer or pos", 400)
 		return
 	}
@@ -923,12 +923,51 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 		total += price * int64(it.Qty)
 	}
 
-	received := total
-	if req.AmountReceived != nil {
-		received = *req.AmountReceived
-		// Preserve legacy zero-as-default clients unless this is a named credit sale.
-		if received == 0 && req.CustomerName == "" {
-			received = total
+	tenders := req.Payments
+	var received int64
+	if tenders != nil {
+		method = ""
+		var cashReceived int64
+		for _, tender := range tenders {
+			if tender.Amount <= 0 {
+				http.Error(w, "payment amounts must be greater than zero", 400)
+				return
+			}
+			if !validPayment[tender.PaymentMethod] {
+				http.Error(w, "payment must be cash, transfer or pos", 400)
+				return
+			}
+			if tender.Amount > int64(^uint64(0)>>1)-received {
+				http.Error(w, "total payment amount is too large", 400)
+				return
+			}
+			received += tender.Amount
+			if tender.PaymentMethod == "cash" {
+				cashReceived += tender.Amount
+			}
+			if method == "" {
+				method = tender.PaymentMethod
+			}
+		}
+		if req.AmountReceived != nil && *req.AmountReceived != received {
+			http.Error(w, "amount received must equal the sum of payment amounts", 400)
+			return
+		}
+		if method == "" {
+			method = "cash"
+		}
+		if received > total && cashReceived < received-total {
+			http.Error(w, "cash received must cover any change given", 400)
+			return
+		}
+	} else {
+		received = total
+		if req.AmountReceived != nil {
+			received = *req.AmountReceived
+			// Preserve legacy zero-as-default clients unless this is a named credit sale.
+			if received == 0 && req.CustomerName == "" {
+				received = total
+			}
 		}
 	}
 	if received < 0 {
@@ -953,7 +992,25 @@ func createSaleV3(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if received > 0 {
+	if tenders != nil {
+		changeRemaining := change
+		for _, tender := range tenders {
+			tenderChange := int64(0)
+			if tender.PaymentMethod == "cash" {
+				tenderChange = changeRemaining
+				if tenderChange > tender.Amount {
+					tenderChange = tender.Amount
+				}
+				changeRemaining -= tenderChange
+			}
+			if _, err := tx.Exec(`INSERT INTO sale_payments
+				(sale_id, amount, change_given, payment_method, recorded_by)
+				VALUES (?, ?, ?, ?, ?)`, saleID, tender.Amount, tenderChange, tender.PaymentMethod, u.ID); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+		}
+	} else if received > 0 {
 		if _, err := tx.Exec(`INSERT INTO sale_payments
 			(sale_id, amount, change_given, payment_method, recorded_by)
 			VALUES (?, ?, ?, ?, ?)`, saleID, received, change, method, u.ID); err != nil {
