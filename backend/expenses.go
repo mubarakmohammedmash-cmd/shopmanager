@@ -85,7 +85,7 @@ func createExpense(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Date must use YYYY-MM-DD format", http.StatusBadRequest)
 			return
 		}
-		if in.Date > time.Now().UTC().Format("2006-01-02") {
+		if in.Date > lagosDate(time.Now()) {
 			http.Error(w, "Date cannot be in the future", http.StatusBadRequest)
 			return
 		}

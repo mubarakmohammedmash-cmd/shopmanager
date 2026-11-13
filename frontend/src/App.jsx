@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
-import { api, naira, toKobo, when } from './api.js'
+import { api, lagos, naira, toKobo, when } from './api.js'
 import SaleScreen from './Sale.jsx'
 import HistoryScreen from './History.jsx'
 import ReportsScreen from './Reports.jsx'
@@ -254,7 +254,7 @@ function Dashboard({ report, recent, outstanding, onOpenHistory }) {
       <div className="stats">
         <Stat label="Sales today" value={naira(report.revenue)} />
         <Stat label="Gross profit" value={naira(report.profit)} />
-        <Stat label="Expenses today" value={naira(report.expenses)} />
+        <Stat label="Approved expenses today" value={naira(report.expenses)} />
         <Stat
           label="Net profit today"
           value={naira(report.net_profit)}
@@ -565,14 +565,14 @@ function Expenses({ expenses, report, reload, notify, isAdmin }) {
             </select>
           </label>
           <label className="field"><span>Date (leave empty for today)</span>
-            <input type="date" max={new Date().toISOString().slice(0, 10)} value={date} onChange={(e) => setDate(e.target.value)} />
+            <input type="date" max={lagos()} value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
           <button type="submit">{isAdmin ? 'Save expense' : 'Submit for review'}</button>
         </form>
       </div>
 
       <div className="card">
-        <h2>{isAdmin ? 'All expenses' : 'My submitted expenses'}</h2>
+        <h2>{isAdmin ? 'All expenses (all dates and statuses)' : 'My submitted expenses'}</h2>
         {expenses.length === 0 && <div className="empty">No expenses recorded yet.</div>}
         {expenses.length > 0 && (
           <div className="table-wrap">
