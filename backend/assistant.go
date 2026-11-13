@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -32,6 +33,7 @@ const (
 )
 
 var assistantTranscriptionAPIURL = "https://api.openai.com/v1/audio/transcriptions"
+var assistantSpeechAPIURL = "https://api.openai.com/v1/audio/speech"
 
 type assistantMessage struct {
 	Role    string `json:"role"`
@@ -114,6 +116,10 @@ type assistantCitation struct {
 }
 
 type openAITranscriptionResponse struct {
+	Text string `json:"text"`
+}
+
+type assistantSpeechRequest struct {
 	Text string `json:"text"`
 }
 
@@ -359,6 +365,90 @@ func requestOpenAITranscription(ctx context.Context, apiKey, filename string, da
 		return result, fmt.Errorf("decode transcription result: %w", err)
 	}
 	return result, nil
+}
+
+func assistantSpeech(w http.ResponseWriter, r *http.Request) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		http.Error(w, "The AI assistant is not configured. Set OPENAI_API_KEY on the backend.", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+	var input assistantSpeechRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Invalid speech request", http.StatusBadRequest)
+		return
+	}
+	input.Text = strings.TrimSpace(input.Text)
+	if input.Text == "" || utf8.RuneCountInString(input.Text) > 4096 {
+		http.Error(w, "Speech text must contain between 1 and 4096 characters", http.StatusBadRequest)
+		return
+	}
+
+	u := currentUser(r)
+	if !allowAssistantRequest(u.ID) {
+		http.Error(w, "The assistant is receiving too many requests. Please wait a minute and try again.", http.StatusTooManyRequests)
+		return
+	}
+	audio, err := requestOpenAISpeech(r.Context(), apiKey, input.Text)
+	if err != nil {
+		log.Printf("AI assistant speech generation failed for user %d: %v", u.ID, err)
+		http.Error(w, "Could not generate spoken reply. Please try again.", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(audio)
+}
+
+func requestOpenAISpeech(ctx context.Context, apiKey, text string) ([]byte, error) {
+	model := strings.TrimSpace(os.Getenv("OPENAI_TTS_MODEL"))
+	if model == "" {
+		model = "gpt-4o-mini-tts"
+	}
+	voice := strings.TrimSpace(os.Getenv("OPENAI_TTS_VOICE"))
+	if voice == "" {
+		voice = "marin"
+	}
+	payload, err := json.Marshal(map[string]string{
+		"model":           model,
+		"voice":           voice,
+		"input":           text,
+		"instructions":    "Speak in a polished, warm, confident professional assistant voice. Use clear diction and natural pacing. Avoid sounding theatrical.",
+		"response_format": "mp3",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode speech request: %w", err)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, assistantSpeechAPIURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create speech request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call OpenAI speech API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
+		if readErr != nil {
+			return nil, fmt.Errorf("OpenAI speech API returned HTTP %d and its error body could not be read: %w", response.StatusCode, readErr)
+		}
+		return nil, fmt.Errorf("OpenAI speech API returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	audio, err := io.ReadAll(io.LimitReader(response.Body, 10<<20+1))
+	if err != nil {
+		return nil, fmt.Errorf("read speech audio: %w", err)
+	}
+	if len(audio) == 0 || len(audio) > 10<<20 {
+		return nil, errors.New("speech audio response is empty or too large")
+	}
+	return audio, nil
 }
 
 func assistantSystemPrompt(u authUser) string {

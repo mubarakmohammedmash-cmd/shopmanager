@@ -49,10 +49,11 @@ async function sessionIsInvalid(auth) {
 }
 
 export async function api(path, options = {}) {
+  const { responseType, ...requestOptions } = options
   const auth = getAuth()
-  const headers = { ...(options.headers || {}) }
+  const headers = { ...(requestOptions.headers || {}) }
   if (auth && auth.token) headers.Authorization = 'Bearer ' + auth.token
-  const res = await fetch(API + path, { ...options, cache: 'no-store', headers })
+  const res = await fetch(API + path, { ...requestOptions, cache: 'no-store', headers })
   let invalidSession = false
   if (res.status === 401 && !path.startsWith('/auth/')) {
     if (!auth?.token) {
@@ -78,6 +79,7 @@ export async function api(path, options = {}) {
     throw new Error(message)
   }
   if (res.status === 204) return null
+  if (responseType === 'blob') return res.blob()
   const text = await res.text()
   return text ? JSON.parse(text) : null
 }

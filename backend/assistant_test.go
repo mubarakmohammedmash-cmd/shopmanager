@@ -161,3 +161,47 @@ func TestAssistantTranscribeRejectsUnsupportedAudio(t *testing.T) {
 		t.Fatalf("unsupported audio status = %d, want %d", response.Code, http.StatusBadRequest)
 	}
 }
+
+func TestRequestOpenAISpeech(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("speech method = %s, want POST", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("speech authorization = %q", r.Header.Get("Authorization"))
+		}
+		var request struct {
+			Model          string `json:"model"`
+			Voice          string `json:"voice"`
+			Input          string `json:"input"`
+			Instructions   string `json:"instructions"`
+			ResponseFormat string `json:"response_format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode speech request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if request.Model != "gpt-4o-mini-tts" || request.Voice != "marin" ||
+			request.Input != "Hello there" || request.ResponseFormat != "mp3" ||
+			request.Instructions == "" {
+			t.Errorf("unexpected speech request: %+v", request)
+		}
+		_, _ = w.Write([]byte("mp3 audio"))
+	}))
+	defer server.Close()
+
+	originalURL := assistantSpeechAPIURL
+	assistantSpeechAPIURL = server.URL
+	t.Cleanup(func() { assistantSpeechAPIURL = originalURL })
+	t.Setenv("OPENAI_TTS_MODEL", "")
+	t.Setenv("OPENAI_TTS_VOICE", "")
+
+	audio, err := requestOpenAISpeech(t.Context(), "test-key", "Hello there")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(audio) != "mp3 audio" {
+		t.Fatalf("speech audio = %q, want mocked audio", audio)
+	}
+}

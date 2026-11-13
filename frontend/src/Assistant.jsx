@@ -26,6 +26,8 @@ export default function Assistant({ isAdmin, setTab, reload }) {
   const [draft, setDraft] = useState(null)
   const [savingDraft, setSavingDraft] = useState(false)
   const recorderRef = useRef(null)
+  const speechAudioRef = useRef(null)
+  const speechAudioURLRef = useRef(null)
   const audioStreamRef = useRef(null)
   const audioContextRef = useRef(null)
   const voiceMonitorRef = useRef(null)
@@ -47,7 +49,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
 
   useEffect(() => () => {
     voiceConversationRef.current = false
-    window.speechSynthesis?.cancel()
+    stopSpeechAudio()
     window.clearInterval(voiceMonitorRef.current)
     audioContextRef.current?.close()
     if (recorderRef.current) {
@@ -124,29 +126,51 @@ export default function Assistant({ isAdmin, setTab, reload }) {
         },
       ])
       if (readReply && voiceConversationRef.current) {
-        if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
-          setMessages((current) => [
-            ...current,
-            { role: 'assistant', content: 'This browser does not support spoken replies. Try a recent browser with speech synthesis enabled.' },
-          ])
-        } else {
-          window.speechSynthesis.cancel()
-          const utterance = new SpeechSynthesisUtterance(reply)
-          utterance.lang = 'en-NG'
-          let speechErrored = false
-          utterance.onend = () => {
-            if (!speechErrored && voiceConversationRef.current) startVoiceInputRef.current?.()
+        api('/assistant/speech', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: reply }),
+          responseType: 'blob',
+        }).then((audioBlob) => {
+          if (!voiceConversationRef.current) return
+          const audioURL = URL.createObjectURL(audioBlob)
+          speechAudioURLRef.current = audioURL
+          const audio = new Audio(audioURL)
+          speechAudioRef.current = audio
+          const releaseAudio = () => {
+            URL.revokeObjectURL(audioURL)
+            if (speechAudioURLRef.current === audioURL) {
+              speechAudioURLRef.current = null
+              speechAudioRef.current = null
+            }
           }
-          utterance.onerror = (event) => {
-            speechErrored = true
+          audio.addEventListener('ended', () => {
+            releaseAudio()
+            if (voiceConversationRef.current) startVoiceInputRef.current?.()
+          }, { once: true })
+          audio.addEventListener('error', () => {
+            releaseAudio()
             setMessages((current) => [
               ...current,
-              { role: 'assistant', content: `Could not speak the reply: ${event.error}. Check your device's speech settings.` },
+              { role: 'assistant', content: 'Could not play the generated voice reply. Check your device audio settings.' },
             ])
             if (voiceConversationRef.current) startVoiceInputRef.current?.()
-          }
-          window.speechSynthesis.speak(utterance)
-        }
+          }, { once: true })
+          audio.play().catch((error) => {
+            releaseAudio()
+            setMessages((current) => [
+              ...current,
+              { role: 'assistant', content: `Could not play the generated voice reply: ${error.message}` },
+            ])
+            if (voiceConversationRef.current) startVoiceInputRef.current?.()
+          })
+        }).catch((error) => {
+          setMessages((current) => [
+            ...current,
+            { role: 'assistant', content: `Could not generate the professional voice reply: ${error.message}` },
+          ])
+          if (voiceConversationRef.current) startVoiceInputRef.current?.()
+        })
       }
       return true
     } catch (error) {
@@ -211,11 +235,20 @@ export default function Assistant({ isAdmin, setTab, reload }) {
     }
   }
 
+  function stopSpeechAudio() {
+    speechAudioRef.current?.pause()
+    speechAudioRef.current = null
+    if (speechAudioURLRef.current) {
+      URL.revokeObjectURL(speechAudioURLRef.current)
+      speechAudioURLRef.current = null
+    }
+  }
+
   function toggleVoiceConversation() {
     if (voiceConversationRef.current) {
       voiceConversationRef.current = false
       setVoiceConversation(false)
-      window.speechSynthesis?.cancel()
+      stopSpeechAudio()
       stopVoiceMonitor()
       if (recorderRef.current) {
         recorderRef.current.onstop = null
@@ -226,13 +259,6 @@ export default function Assistant({ isAdmin, setTab, reload }) {
       audioStreamRef.current = null
       audioChunksRef.current = []
       setListening(false)
-      return
-    }
-    if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
-      setMessages((current) => [
-        ...current,
-        { role: 'assistant', content: 'Spoken replies are not supported in this browser. Try a recent browser with speech synthesis enabled.' },
-      ])
       return
     }
     voiceConversationRef.current = true
@@ -487,7 +513,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
 
           <form className="assistant-composer" onSubmit={sendMessage}>
             <p className="assistant-privacy">
-              Voice recordings, messages, files, and web searches go to OpenAI; usage may incur API charges. Replies use your browser's voice.
+              Voice recordings, messages, files, and web searches go to OpenAI; usage may incur API charges. Voice replies are AI-generated.
             </p>
             {attachments.length > 0 && (
               <div className="assistant-selected-files">
