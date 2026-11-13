@@ -57,10 +57,10 @@ function downloadHistoryCSV(sales) {
     paymentMethodLabel(sale.payment_method),
     sale.status,
     sale.sold_by,
-    sale.total,
-    sale.paid,
-    sale.balance,
-    sale.profit ?? '',
+    (sale.total / 100).toFixed(2),
+    (sale.paid / 100).toFixed(2),
+    (sale.balance / 100).toFixed(2),
+    sale.profit != null ? (sale.profit / 100).toFixed(2) : '',
     sale.voided_by || '',
   ])
 

@@ -324,7 +324,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
           if (!transcript) throw new Error('No speech was detected. Please try again.')
           if (!voiceConversationRef.current) return
           setTranscribing(false)
-          const submitted = await submitMessageRef.current?.(transcript, [], webSearchRef.current, true)
+          const submitted = await submitMessageRef.current?.(transcript, attachments, webSearchRef.current, true)
           if (!submitted && voiceConversationRef.current) startVoiceInputRef.current?.()
         } catch (error) {
           setMessages((current) => [

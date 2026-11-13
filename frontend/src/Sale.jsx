@@ -109,42 +109,38 @@ export default function SaleScreen({ products, reload, notify, isAdmin }) {
     }
 
     if (additions.length > 0) {
-      setCart((previousCart) => {
-        const nextCart = previousCart.map((c) => ({ ...c }))
+      const nextCart = cart.map((c) => ({ ...c }))
 
-        for (const { product, price } of additions) {
-          const index = nextCart.findIndex((c) => c.id === product.id)
-          const currentQty = index >= 0 ? nextCart[index].qty : 0
+      for (const { product, price } of additions) {
+        const index = nextCart.findIndex((c) => c.id === product.id)
+        const currentQty = index >= 0 ? nextCart[index].qty : 0
 
-          if (currentQty + 1 > product.stock) {
-            errors.push(
-              `Only ${product.stock} of ${product.name} in stock`
-            )
-            continue
-          }
-
-          if (index >= 0) {
-            nextCart[index] = {
-              ...nextCart[index],
-              qty: nextCart[index].qty + 1,
-              price: price !== null ? String(price) : nextCart[index].price,
-            }
-          } else {
-            nextCart.push({
-              id: product.id,
-              name: product.name,
-              price: price !== null
-                ? String(price)
-                : String(product.selling_price / 100),
-              cost: product.cost_price,
-              stock: product.stock,
-              qty: 1,
-            })
-          }
+        if (currentQty + 1 > product.stock) {
+          errors.push(`Only ${product.stock} of ${product.name} in stock`)
+          continue
         }
 
-        return nextCart
-      })
+        if (index >= 0) {
+          nextCart[index] = {
+            ...nextCart[index],
+            qty: nextCart[index].qty + 1,
+            price: price !== null ? String(price) : nextCart[index].price,
+          }
+        } else {
+          nextCart.push({
+            id: product.id,
+            name: product.name,
+            price: price !== null
+              ? String(price)
+              : String(product.selling_price / 100),
+            cost: product.cost_price,
+            stock: product.stock,
+            qty: 1,
+          })
+        }
+      }
+
+      setCart(nextCart)
     }
 
     setEntry('')
