@@ -182,7 +182,7 @@ func TestRequestOpenAISpeech(t *testing.T) {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		if request.Model != "gpt-4o-mini-tts" || request.Voice != "marin" ||
+		if request.Model != "gpt-4o-mini-tts" || request.Voice != "cedar" ||
 			request.Input != "Hello there" || request.ResponseFormat != "mp3" ||
 			request.Instructions == "" {
 			t.Errorf("unexpected speech request: %+v", request)
@@ -195,9 +195,8 @@ func TestRequestOpenAISpeech(t *testing.T) {
 	assistantSpeechAPIURL = server.URL
 	t.Cleanup(func() { assistantSpeechAPIURL = originalURL })
 	t.Setenv("OPENAI_TTS_MODEL", "")
-	t.Setenv("OPENAI_TTS_VOICE", "")
 
-	audio, err := requestOpenAISpeech(t.Context(), "test-key", "Hello there")
+	audio, err := requestOpenAISpeech(t.Context(), "test-key", "Hello there", "cedar")
 	if err != nil {
 		t.Fatal(err)
 	}

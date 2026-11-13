@@ -72,6 +72,8 @@ button.danger { background: var(--red); }
 .assistant-composer textarea { width: 100%; resize: vertical; padding: 10px; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
 .assistant-composer > div { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .assistant-composer button { min-height: 44px; }
+.assistant-voice-picker { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; color: var(--muted); font-size: 12px; }
+.assistant-voice-picker select { max-width: 220px; min-height: 44px; padding: 8px; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }

@@ -120,7 +120,14 @@ type openAITranscriptionResponse struct {
 }
 
 type assistantSpeechRequest struct {
-	Text string `json:"text"`
+	Text  string `json:"text"`
+	Voice string `json:"voice"`
+}
+
+var assistantSpeechVoices = map[string]bool{
+	"alloy": true, "ash": true, "ballad": true, "coral": true, "echo": true,
+	"fable": true, "marin": true, "cedar": true, "nova": true, "onyx": true,
+	"sage": true, "shimmer": true, "verse": true,
 }
 
 var assistantRateLimit = struct {
@@ -384,13 +391,24 @@ func assistantSpeech(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Speech text must contain between 1 and 4096 characters", http.StatusBadRequest)
 		return
 	}
+	input.Voice = strings.ToLower(strings.TrimSpace(input.Voice))
+	if input.Voice == "" {
+		input.Voice = strings.TrimSpace(os.Getenv("OPENAI_TTS_VOICE"))
+		if input.Voice == "" {
+			input.Voice = "marin"
+		}
+	}
+	if !assistantSpeechVoices[input.Voice] {
+		http.Error(w, "Unsupported speech voice", http.StatusBadRequest)
+		return
+	}
 
 	u := currentUser(r)
 	if !allowAssistantRequest(u.ID) {
 		http.Error(w, "The assistant is receiving too many requests. Please wait a minute and try again.", http.StatusTooManyRequests)
 		return
 	}
-	audio, err := requestOpenAISpeech(r.Context(), apiKey, input.Text)
+	audio, err := requestOpenAISpeech(r.Context(), apiKey, input.Text, input.Voice)
 	if err != nil {
 		log.Printf("AI assistant speech generation failed for user %d: %v", u.ID, err)
 		http.Error(w, "Could not generate spoken reply. Please try again.", http.StatusBadGateway)
@@ -402,14 +420,14 @@ func assistantSpeech(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(audio)
 }
 
-func requestOpenAISpeech(ctx context.Context, apiKey, text string) ([]byte, error) {
+func requestOpenAISpeech(ctx context.Context, apiKey, text, voice string) ([]byte, error) {
 	model := strings.TrimSpace(os.Getenv("OPENAI_TTS_MODEL"))
 	if model == "" {
 		model = "gpt-4o-mini-tts"
 	}
-	voice := strings.TrimSpace(os.Getenv("OPENAI_TTS_VOICE"))
-	if voice == "" {
-		voice = "marin"
+	voice = strings.ToLower(strings.TrimSpace(voice))
+	if !assistantSpeechVoices[voice] {
+		return nil, errors.New("unsupported speech voice")
 	}
 	payload, err := json.Marshal(map[string]string{
 		"model":           model,

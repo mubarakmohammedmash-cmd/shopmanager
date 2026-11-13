@@ -3,6 +3,21 @@ import { api, naira } from './api.js'
 
 const MAX_FILE_SIZE = 4 * 1024 * 1024
 const MAX_FILES = 3
+const SPEECH_VOICES = [
+  ['marin', 'Marin — polished and natural'],
+  ['cedar', 'Cedar — clear and confident'],
+  ['coral', 'Coral — warm and bright'],
+  ['sage', 'Sage — calm and measured'],
+  ['nova', 'Nova — lively and clear'],
+  ['alloy', 'Alloy — balanced'],
+  ['ash', 'Ash — smooth'],
+  ['ballad', 'Ballad — expressive'],
+  ['echo', 'Echo — steady'],
+  ['fable', 'Fable — storytelling'],
+  ['onyx', 'Onyx — deep'],
+  ['shimmer', 'Shimmer — bright'],
+  ['verse', 'Verse — expressive'],
+]
 const ALLOWED_FILE_TYPES = new Set([
   'png', 'jpg', 'jpeg', 'webp', 'gif', 'pdf', 'txt', 'md', 'csv', 'json',
   'html', 'xml', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'rtf', 'odt',
@@ -23,6 +38,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
   const [listening, setListening] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const [voiceConversation, setVoiceConversation] = useState(false)
+  const [speechVoice, setSpeechVoice] = useState(() => localStorage.getItem('assistant-speech-voice') || 'marin')
   const [draft, setDraft] = useState(null)
   const [savingDraft, setSavingDraft] = useState(false)
   const recorderRef = useRef(null)
@@ -37,6 +53,8 @@ export default function Assistant({ isAdmin, setTab, reload }) {
   const submitMessageRef = useRef(null)
   const webSearchRef = useRef(webSearch)
   webSearchRef.current = webSearch
+  const speechVoiceRef = useRef(speechVoice)
+  speechVoiceRef.current = speechVoice
   const conversationRef = useRef(null)
   const fileInputRef = useRef(null)
 
@@ -129,7 +147,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
         api('/assistant/speech', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: reply }),
+          body: JSON.stringify({ text: reply, voice: speechVoiceRef.current }),
           responseType: 'blob',
         }).then((audioBlob) => {
           if (!voiceConversationRef.current) return
@@ -543,6 +561,22 @@ export default function Assistant({ isAdmin, setTab, reload }) {
               disabled={busy || transcribing || Boolean(draft) || voiceConversation}
             />
             <div>
+              <label className="assistant-voice-picker">
+                <span>AI voice</span>
+                <select
+                  aria-label="Choose AI voice"
+                  value={speechVoice}
+                  onChange={(event) => {
+                    setSpeechVoice(event.target.value)
+                    localStorage.setItem('assistant-speech-voice', event.target.value)
+                  }}
+                  disabled={busy || transcribing}
+                >
+                  {SPEECH_VOICES.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </label>
               <input
                 ref={fileInputRef}
                 className="assistant-file-input"
