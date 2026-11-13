@@ -401,8 +401,10 @@ export default function ReportsScreen() {
           <div className="grid-2">
             <div className="card">
               <h2>Best-selling products</h2>
-              <p className="muted">Units sold for each product</p>
-              <ProductPieChart products={data.top_products} />
+              <p className="muted">
+                Units sold for each product in the selected period
+              </p>
+              <ProductPieChart products={data.products} />
             </div>
 
             <div className="card">

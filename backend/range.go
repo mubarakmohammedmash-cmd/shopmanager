@@ -35,14 +35,14 @@ func rangeParams(r *http.Request) (string, string, bool) {
 	return from, to, e1 == nil && e2 == nil && from <= to
 }
 
-func topInRange(storeID int64, from, to string) ([]TopProduct, error) {
+func productsInRange(storeID int64, from, to string) ([]TopProduct, error) {
 	rows, err := db.Query(`SELECT p.name, SUM(si.qty), SUM(si.qty * (si.unit_price - si.unit_cost))
 		FROM sale_items si
 		JOIN products p ON p.id = si.product_id
 		JOIN sales s ON s.id = si.sale_id
 		WHERE s.status = 'completed' AND s.store_id = ?
 		AND date(s.created_at, '+1 hour') BETWEEN ? AND ?
-		GROUP BY p.id ORDER BY SUM(si.qty) DESC LIMIT 10`, storeID, from, to)
+		GROUP BY p.id ORDER BY SUM(si.qty) DESC`, storeID, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -138,10 +138,14 @@ func rangeReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	top, err := topInRange(storeID, from, to)
+	products, err := productsInRange(storeID, from, to)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
+	}
+	top := products
+	if len(top) > 10 {
+		top = top[:10]
 	}
 	pays, err := paymentsInRange(storeID, from, to)
 	if err != nil {
@@ -179,6 +183,7 @@ func rangeReport(w http.ResponseWriter, r *http.Request) {
 		"net_profit":        profit - expenses,
 		"sales_count":       count,
 		"voided_count":      voided,
+		"products":          products,
 		"top_products":      top,
 		"payments":          pays,
 		"cash_received":     cashReceived,
