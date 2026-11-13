@@ -22,12 +22,19 @@ export default function Assistant({ isAdmin, setTab, reload }) {
   const [busy, setBusy] = useState(false)
   const [listening, setListening] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
-  const [speakReplies, setSpeakReplies] = useState(false)
+  const [voiceConversation, setVoiceConversation] = useState(false)
   const [draft, setDraft] = useState(null)
   const [savingDraft, setSavingDraft] = useState(false)
   const recorderRef = useRef(null)
   const audioStreamRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const voiceMonitorRef = useRef(null)
   const audioChunksRef = useRef([])
+  const voiceConversationRef = useRef(false)
+  const startVoiceInputRef = useRef(null)
+  const submitMessageRef = useRef(null)
+  const webSearchRef = useRef(webSearch)
+  webSearchRef.current = webSearch
   const conversationRef = useRef(null)
   const fileInputRef = useRef(null)
 
@@ -39,7 +46,10 @@ export default function Assistant({ isAdmin, setTab, reload }) {
   }, [messages, draft, busy])
 
   useEffect(() => () => {
+    voiceConversationRef.current = false
     window.speechSynthesis?.cancel()
+    window.clearInterval(voiceMonitorRef.current)
+    audioContextRef.current?.close()
     if (recorderRef.current) {
       recorderRef.current.onstop = null
       recorderRef.current.onerror = null
@@ -47,6 +57,11 @@ export default function Assistant({ isAdmin, setTab, reload }) {
     }
     audioStreamRef.current?.getTracks().forEach((track) => track.stop())
   }, [])
+
+  useEffect(() => {
+    startVoiceInputRef.current = startVoiceInput
+    submitMessageRef.current = submitMessage
+  })
 
   function readAttachment(file) {
     return new Promise((resolve, reject) => {
@@ -65,9 +80,9 @@ export default function Assistant({ isAdmin, setTab, reload }) {
     })
   }
 
-  async function submitMessage(rawText, files = attachments, searchWeb = webSearch, readReply = speakReplies) {
+  async function submitMessage(rawText, files = attachments, searchWeb = webSearch, readReply = false) {
     const text = rawText.trim() || (files.length > 0 ? 'Please review the attached file(s).' : '')
-    if (!text || busy) return
+    if (!text || busy) return false
 
     const attachmentNames = files.map((file) => file.name)
     const outgoing = [...messages, {
@@ -108,7 +123,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
           chart: result.action?.chart || null,
         },
       ])
-      if (readReply) {
+      if (readReply && voiceConversationRef.current) {
         if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
           setMessages((current) => [
             ...current,
@@ -118,20 +133,28 @@ export default function Assistant({ isAdmin, setTab, reload }) {
           window.speechSynthesis.cancel()
           const utterance = new SpeechSynthesisUtterance(reply)
           utterance.lang = 'en-NG'
+          let speechErrored = false
+          utterance.onend = () => {
+            if (!speechErrored && voiceConversationRef.current) startVoiceInputRef.current?.()
+          }
           utterance.onerror = (event) => {
+            speechErrored = true
             setMessages((current) => [
               ...current,
               { role: 'assistant', content: `Could not speak the reply: ${event.error}. Check your device's speech settings.` },
             ])
+            if (voiceConversationRef.current) startVoiceInputRef.current?.()
           }
           window.speechSynthesis.speak(utterance)
         }
       }
+      return true
     } catch (error) {
       setMessages((current) => [
         ...current,
         { role: 'assistant', content: `I couldn’t complete that request: ${error.message}` },
       ])
+      return false
     } finally {
       setBusy(false)
     }
@@ -179,9 +202,42 @@ export default function Assistant({ isAdmin, setTab, reload }) {
     setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
   }
 
-  function toggleVoiceReplies() {
-    if (speakReplies) window.speechSynthesis?.cancel()
-    setSpeakReplies(!speakReplies)
+  function stopVoiceMonitor() {
+    window.clearInterval(voiceMonitorRef.current)
+    voiceMonitorRef.current = null
+    if (audioContextRef.current) {
+      audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+  }
+
+  function toggleVoiceConversation() {
+    if (voiceConversationRef.current) {
+      voiceConversationRef.current = false
+      setVoiceConversation(false)
+      window.speechSynthesis?.cancel()
+      stopVoiceMonitor()
+      if (recorderRef.current) {
+        recorderRef.current.onstop = null
+        if (recorderRef.current.state === 'recording') recorderRef.current.stop()
+        recorderRef.current = null
+      }
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop())
+      audioStreamRef.current = null
+      audioChunksRef.current = []
+      setListening(false)
+      return
+    }
+    if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
+      setMessages((current) => [
+        ...current,
+        { role: 'assistant', content: 'Spoken replies are not supported in this browser. Try a recent browser with speech synthesis enabled.' },
+      ])
+      return
+    }
+    voiceConversationRef.current = true
+    setVoiceConversation(true)
+    startVoiceInputRef.current?.()
   }
 
   function audioExtension(mimeType) {
@@ -192,7 +248,10 @@ export default function Assistant({ isAdmin, setTab, reload }) {
   }
 
   async function startVoiceInput() {
+    if (!voiceConversationRef.current) return
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      voiceConversationRef.current = false
+      setVoiceConversation(false)
       setMessages((current) => [
         ...current,
         { role: 'assistant', content: 'Voice recording is not supported in this browser. Use a recent browser over HTTPS, or type your message.' },
@@ -202,39 +261,54 @@ export default function Assistant({ isAdmin, setTab, reload }) {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (!voiceConversationRef.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
       audioStreamRef.current = stream
       audioChunksRef.current = []
       const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus']
         .find((type) => MediaRecorder.isTypeSupported(type))
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
       recorderRef.current = recorder
+      const audioContext = new AudioContext()
+      audioContextRef.current = audioContext
+      await audioContext.resume()
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 2048
+      audioContext.createMediaStreamSource(stream).connect(analyser)
+      const samples = new Float32Array(analyser.fftSize)
+      let heardSpeech = false
+      let quietSince = 0
+      const startedAt = Date.now()
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) audioChunksRef.current.push(event.data)
       }
       recorder.onerror = () => {
+        stopVoiceMonitor()
         recorder.onstop = null
         stream.getTracks().forEach((track) => track.stop())
         audioStreamRef.current = null
         recorderRef.current = null
         audioChunksRef.current = []
         setListening(false)
+        voiceConversationRef.current = false
+        setVoiceConversation(false)
         setMessages((current) => [
           ...current,
           { role: 'assistant', content: 'Microphone recording failed. Check microphone access and try again.' },
         ])
       }
       recorder.onstop = async () => {
+        stopVoiceMonitor()
         stream.getTracks().forEach((track) => track.stop())
         audioStreamRef.current = null
         recorderRef.current = null
         setListening(false)
         const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
         audioChunksRef.current = []
-        if (!blob.size) {
-          setMessages((current) => [
-            ...current,
-            { role: 'assistant', content: 'No audio was recorded. Try speaking after recording starts.' },
-          ])
+        if (!blob.size || !heardSpeech) {
+          if (voiceConversationRef.current) startVoiceInputRef.current?.()
           return
         }
 
@@ -248,26 +322,44 @@ export default function Assistant({ isAdmin, setTab, reload }) {
           })
           const transcript = String(result.text || '').trim()
           if (!transcript) throw new Error('No speech was detected. Please try again.')
-          setSpeakReplies(true)
+          if (!voiceConversationRef.current) return
           setTranscribing(false)
-          await submitMessage(transcript, [], webSearch, true)
+          const submitted = await submitMessageRef.current?.(transcript, [], webSearchRef.current, true)
+          if (!submitted && voiceConversationRef.current) startVoiceInputRef.current?.()
         } catch (error) {
           setMessages((current) => [
             ...current,
             { role: 'assistant', content: `Voice request failed: ${error.message}` },
           ])
+          if (voiceConversationRef.current) startVoiceInputRef.current?.()
         } finally {
           setTranscribing(false)
         }
       }
       recorder.start()
-      setSpeakReplies(true)
       setListening(true)
+      voiceMonitorRef.current = window.setInterval(() => {
+        analyser.getFloatTimeDomainData(samples)
+        let energy = 0
+        for (const sample of samples) energy += sample * sample
+        const volume = Math.sqrt(energy / samples.length)
+        if (volume > 0.015) {
+          heardSpeech = true
+          quietSince = 0
+        } else if (heardSpeech) {
+          if (!quietSince) quietSince = Date.now()
+          if (Date.now() - quietSince >= 1200) stopVoiceInput()
+        }
+        if (Date.now() - startedAt >= 60000) stopVoiceInput()
+      }, 100)
     } catch (error) {
+      stopVoiceMonitor()
       recorderRef.current = null
       audioStreamRef.current?.getTracks().forEach((track) => track.stop())
       audioStreamRef.current = null
       setListening(false)
+      voiceConversationRef.current = false
+      setVoiceConversation(false)
       setMessages((current) => [
         ...current,
         { role: 'assistant', content: error.name === 'NotAllowedError'
@@ -323,6 +415,11 @@ export default function Assistant({ isAdmin, setTab, reload }) {
     ])
   }
 
+  function closeAssistant() {
+    if (voiceConversationRef.current) toggleVoiceConversation()
+    setOpen(false)
+  }
+
   return (
     <div className="assistant">
       {open && (
@@ -332,7 +429,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
               <strong>Shop assistant</strong>
               <span>AI · {isAdmin ? 'Manager' : 'Sales rep'} access</span>
             </div>
-            <button type="button" className="ghost assistant-close" onClick={() => setOpen(false)} aria-label="Close assistant">
+            <button type="button" className="ghost assistant-close" onClick={closeAssistant} aria-label="Close assistant">
               Close
             </button>
           </header>
@@ -382,7 +479,8 @@ export default function Assistant({ isAdmin, setTab, reload }) {
               </div>
             )}
 
-            {listening && <div className="assistant-message">Listening… Press “Stop &amp; send” when you’re done.</div>}
+            {listening && <div className="assistant-message">Listening… Speak naturally. I’ll send your message after a pause.</div>}
+            {voiceConversation && !listening && !transcribing && !busy && <div className="assistant-message">Voice conversation is on.</div>}
             {transcribing && <div className="assistant-message">Transcribing your voice…</div>}
             {busy && <div className="assistant-message">Thinking…</div>}
           </div>
@@ -416,7 +514,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
                   event.currentTarget.form?.requestSubmit()
                 }
               }}
-              disabled={busy || transcribing || Boolean(draft) || listening}
+              disabled={busy || transcribing || Boolean(draft) || voiceConversation}
             />
             <div>
               <input
@@ -426,27 +524,24 @@ export default function Assistant({ isAdmin, setTab, reload }) {
                 multiple
                 accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.xml,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.rtf,.odt"
                 onChange={selectFiles}
-                disabled={busy || transcribing || Boolean(draft)}
+                disabled={busy || transcribing || Boolean(draft) || voiceConversation}
               />
-              <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()} disabled={busy || transcribing || Boolean(draft) || attachments.length >= MAX_FILES}>
+              <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()} disabled={busy || transcribing || Boolean(draft) || voiceConversation || attachments.length >= MAX_FILES}>
                 Attach
               </button>
-              <button type="button" className={webSearch ? '' : 'ghost'} aria-pressed={webSearch} onClick={() => setWebSearch((current) => !current)} disabled={busy || transcribing || Boolean(draft)}>
+              <button type="button" className={webSearch ? '' : 'ghost'} aria-pressed={webSearch} onClick={() => setWebSearch((current) => !current)} disabled={busy || transcribing || Boolean(draft) || voiceConversation}>
                 {webSearch ? 'Web search on' : 'Search web'}
-              </button>
-              <button type="button" className={speakReplies ? '' : 'ghost'} aria-pressed={speakReplies} onClick={toggleVoiceReplies} disabled={!('speechSynthesis' in window) || busy || transcribing || Boolean(draft)}>
-                {speakReplies ? 'Voice replies on' : 'Voice replies'}
               </button>
               <button
                 type="button"
-                className={listening ? '' : 'ghost'}
-                onClick={listening ? stopVoiceInput : startVoiceInput}
-                disabled={busy || transcribing || Boolean(draft)}
-                aria-pressed={listening}
+                className={voiceConversation ? '' : 'ghost'}
+                onClick={toggleVoiceConversation}
+                disabled={Boolean(draft)}
+                aria-pressed={voiceConversation}
               >
-                {listening ? 'Stop & send' : 'Speak'}
+                {voiceConversation ? 'End voice conversation' : 'Start voice conversation'}
               </button>
-              <button type="submit" disabled={busy || transcribing || Boolean(draft) || (!input.trim() && attachments.length === 0)}>
+              <button type="submit" disabled={busy || transcribing || Boolean(draft) || voiceConversation || (!input.trim() && attachments.length === 0)}>
                 Send
               </button>
             </div>
@@ -456,7 +551,7 @@ export default function Assistant({ isAdmin, setTab, reload }) {
       <button
         type="button"
         className="assistant-launcher"
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => (open ? closeAssistant() : setOpen(true))}
         aria-expanded={open}
         aria-label={open ? 'Close AI assistant' : 'Open AI assistant'}
       >
